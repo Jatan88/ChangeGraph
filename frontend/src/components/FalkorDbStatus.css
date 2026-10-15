@@ -1,0 +1,143 @@
+.falkor-status {
+  width: min(100%, 420px);
+  text-align: left;
+  padding: 16px 18px;
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: var(--social-bg);
+  box-shadow: var(--shadow);
+  box-sizing: border-box;
+}
+
+.falkor-status.is-up {
+  border-color: color-mix(in srgb, #22c55e 45%, var(--border));
+  background: color-mix(in srgb, #22c55e 8%, var(--bg));
+}
+
+.falkor-status.is-down {
+  border-color: color-mix(in srgb, #ef4444 45%, var(--border));
+  background: color-mix(in srgb, #ef4444 8%, var(--bg));
+}
+
+.falkor-status.is-loading {
+  opacity: 0.85;
+}
+
+.falkor-status-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.falkor-status-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text);
+}
+
+.is-up .falkor-status-dot {
+  background: #22c55e;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #22c55e 25%, transparent);
+}
+
+.is-down .falkor-status-dot {
+  background: #ef4444;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #ef4444 25%, transparent);
+}
+
+.is-loading .falkor-status-dot {
+  animation: falkor-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes falkor-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.falkor-status-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-h);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.falkor-status-label {
+  margin: 2px 0 0;
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--text-h);
+  line-height: 1.2;
+}
+
+.falkor-status-refresh {
+  margin-left: auto;
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 12px;
+  border-radius: 0;
+  border: 1px solid var(--border);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-h);
+  cursor: pointer;
+  transition: box-shadow 0.2s;
+}
+
+.falkor-status-refresh:hover:not(:disabled) {
+  box-shadow: var(--shadow);
+}
+
+.falkor-status-refresh:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.falkor-status-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 14px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.falkor-status-meta dt {
+  margin: 0;
+  color: var(--text);
+}
+
+.falkor-status-meta dd {
+  margin: 0;
+  color: var(--text-h);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.falkor-status-error,
+.falkor-status-target {
+  margin: 12px 0 0;
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.falkor-status-error {
+  color: var(--text-h);
+}
+
+.falkor-status-target {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-all;
+}

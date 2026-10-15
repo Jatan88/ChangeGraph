@@ -1,0 +1,829 @@
+openapi: 3.0.3
+info:
+  title: ChangeGraph API
+  version: 0.1.0
+  description: |
+    Session-authenticated API for public-repository change impact analysis.
+    State-changing requests require the `X-XSRF-TOKEN` header copied from the `XSRF-TOKEN` cookie.
+    Project routes return 404 when the project is missing or owned by someone else.
+    This file is the local contract. It is not published to a Postman workspace.
+servers:
+  - url: http://localhost:1212
+paths:
+  /api/auth/register:
+    post:
+      summary: Register and start a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUser'
+        '400':
+          $ref: '#/components/responses/Error'
+        '409':
+          $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
+  /api/auth/login:
+    post:
+      summary: Log in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Session started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUser'
+        '401':
+          $ref: '#/components/responses/Error'
+        '429':
+          $ref: '#/components/responses/Error'
+  /api/auth/logout:
+    post:
+      summary: Log out
+      responses:
+        '204':
+          description: Session cleared
+  /api/auth/me:
+    get:
+      summary: Current user
+      responses:
+        '200':
+          description: Signed-in user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUser'
+        '401':
+          $ref: '#/components/responses/Error'
+  /api/projects:
+    get:
+      summary: List owned projects
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Owned projects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectPage'
+    post:
+      summary: Create a project and initialize its graph
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 80
+                description:
+                  type: string
+                  maxLength: 500
+      responses:
+        '201':
+          description: Project created. graphStatus is READY or FAILED.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+  /api/projects/{projectId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      summary: Get an owned project
+      responses:
+        '200':
+          description: Project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '404':
+          $ref: '#/components/responses/Error'
+    patch:
+      summary: Update name or description
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+      responses:
+        '200':
+          description: Updated project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+    delete:
+      summary: Delete an owned project and its own graph
+      parameters:
+        - name: confirm
+          in: query
+          required: true
+          schema:
+            type: boolean
+            enum: [true]
+      responses:
+        '204':
+          description: Deleted
+        '422':
+          $ref: '#/components/responses/Error'
+  /api/projects/{projectId}/graph:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      summary: Retry graph initialization for the stored graph name
+      responses:
+        '200':
+          description: Project with updated graphStatus
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+    get:
+      summary: Read a bounded view of the project graph
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [Repository, File, Function, Service, Test, Commit, Incident, Evidence]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 200
+            maximum: 500
+      responses:
+        '200':
+          description: Nodes and edges
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphView'
+  /api/projects/{projectId}/repository:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      summary: Link a public GitHub repository
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [repositoryUrl]
+              properties:
+                repositoryUrl:
+                  type: string
+                  example: https://github.com/owner/repository
+      responses:
+        '201':
+          description: Verified public repository
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Repository'
+        '422':
+          $ref: '#/components/responses/Error'
+    get:
+      summary: Get the linked repository
+      responses:
+        '200':
+          description: Linked repository
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Repository'
+    delete:
+      summary: Unlink the repository
+      responses:
+        '204':
+          description: Unlinked
+  /api/projects/{projectId}/commits:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      summary: Recent commits from the last GitHub poll
+      description: Returns the commits stored by the last poll. This request does not call GitHub.
+      responses:
+        '200':
+          description: Cached public commit summaries. Empty until the first poll.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CommitSummary'
+  /api/projects/{projectId}/github-poll:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      summary: Last commit poll
+      description: Returns the cached commit list, when it was polled, and the configured interval. Does not call GitHub.
+      responses:
+        '200':
+          description: Cached poll
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitPoll'
+    post:
+      summary: Poll GitHub for commits now
+      description: Calls GitHub once for this project and replaces the cached commit list. Not limited by the automatic interval.
+      responses:
+        '200':
+          description: Fresh poll
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitPoll'
+        '429':
+          $ref: '#/components/responses/Error'
+  /api/projects/{projectId}/commits/{sha}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: sha
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: Commit detail without patches
+      responses:
+        '200':
+          description: Changed files. Patch text is removed before the response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommitDetail'
+  /api/projects/{projectId}/pulls:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      summary: Open public pull requests
+      responses:
+        '200':
+          description: Pull requests
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PullRequest'
+  /api/projects/{projectId}/ingestions:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      summary: Queue ingestion of one public commit
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                commitSha:
+                  type: string
+                  nullable: true
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestionJob'
+    get:
+      summary: List ingestion jobs
+      responses:
+        '200':
+          description: Jobs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestionPage'
+  /api/projects/{projectId}/ingestions/{jobId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: jobId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Get one ingestion job
+      responses:
+        '200':
+          description: Job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestionJob'
+  /api/projects/{projectId}/synthetic-incidents:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      summary: Opt-in seed of two labeled synthetic payment incidents
+      responses:
+        '200':
+          description: Seed result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyntheticSeed'
+  /api/projects/{projectId}/analysis:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      summary: Analyze a commit or pull request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                commitSha:
+                  type: string
+                pullRequestNumber:
+                  type: integer
+      responses:
+        '200':
+          description: Explainable impact report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisReport'
+  /api/projects/{projectId}/agent/investigations:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      summary: Investigate a commit or pull request with the bounded impact agent
+      description: >
+        Read-only. The agent may call fixed project-graph tools. Risk claims cite graph evidence
+        or are marked as hypotheses. If the language model is unavailable or returns invalid output,
+        agentStatus is DETERMINISTIC_FALLBACK. Score bands match AnalysisReport.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                commitSha:
+                  type: string
+                pullRequestNumber:
+                  type: integer
+      responses:
+        '200':
+          description: Evidence-backed agent report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentReport'
+        '409':
+          description: The graph or commit is not ready
+  /api/projects/{projectId}/analysis/{analysisId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: analysisId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Read a stored analysis
+      responses:
+        '200':
+          description: Stored report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisReport'
+  /api/graph/health:
+    get:
+      summary: FalkorDB connectivity check for the shared health graph
+      responses:
+        '200':
+          description: Health payload. This does not read a project graph.
+components:
+  parameters:
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 0
+    Size:
+      name: size
+      in: query
+      schema:
+        type: integer
+        default: 20
+  responses:
+    Error:
+      description: Safe error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        fieldErrors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+    RegisterRequest:
+      type: object
+      required: [email, password, passwordConfirmation]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+        passwordConfirmation:
+          type: string
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+    CurrentUser:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    Project:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        repositoryConnected:
+          type: boolean
+        repository:
+          allOf:
+            - $ref: '#/components/schemas/Repository'
+          nullable: true
+        graphStatus:
+          type: string
+          enum: [PENDING, READY, FAILED]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        latestIngestion:
+          $ref: '#/components/schemas/Activity'
+        latestAnalysis:
+          $ref: '#/components/schemas/Activity'
+    ProjectPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+        page:
+          type: integer
+        size:
+          type: integer
+        total:
+          type: integer
+    Activity:
+      type: object
+      nullable: true
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+        detail:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    Repository:
+      type: object
+      properties:
+        githubRepositoryId:
+          type: integer
+          format: int64
+        ownerName:
+          type: string
+        repositoryName:
+          type: string
+        defaultBranch:
+          type: string
+        repositoryUrl:
+          type: string
+        visibility:
+          type: string
+          enum: [public]
+        lastSyncedAt:
+          type: string
+          format: date-time
+          nullable: true
+    CommitPoll:
+      type: object
+      properties:
+        commits:
+          type: array
+          items:
+            $ref: '#/components/schemas/CommitSummary'
+        lastPolledAt:
+          type: string
+          format: date-time
+          nullable: true
+        pollIntervalSeconds:
+          type: integer
+          format: int64
+          description: Automatic poll interval from changegraph.github.poll-interval-minutes.
+    CommitSummary:
+      type: object
+      properties:
+        sha:
+          type: string
+        message:
+          type: string
+        committedAt:
+          type: string
+    CommitDetail:
+      type: object
+      properties:
+        sha:
+          type: string
+        message:
+          type: string
+        committedAt:
+          type: string
+        parentShas:
+          type: array
+          items:
+            type: string
+        files:
+          type: array
+          items:
+            type: object
+            properties:
+              filename:
+                type: string
+              previousFilename:
+                type: string
+                nullable: true
+              status:
+                type: string
+              additions:
+                type: integer
+              deletions:
+                type: integer
+    PullRequest:
+      type: object
+      properties:
+        number:
+          type: integer
+        title:
+          type: string
+        headSha:
+          type: string
+        baseSha:
+          type: string
+        htmlUrl:
+          type: string
+    IngestionJob:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED]
+        requestedCommitSha:
+          type: string
+          nullable: true
+        progressMessage:
+          type: string
+          nullable: true
+        errorCode:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+    IngestionPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/IngestionJob'
+        page:
+          type: integer
+        size:
+          type: integer
+        total:
+          type: integer
+    GraphView:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+        edges:
+          type: array
+          items:
+            type: object
+        truncated:
+          type: boolean
+    SyntheticSeed:
+      type: object
+      properties:
+        message:
+          type: string
+        scenarioKeys:
+          type: array
+          items:
+            type: string
+        linkedFunctionIds:
+          type: array
+          items:
+            type: string
+        notes:
+          type: array
+          items:
+            type: string
+    AgentReport:
+      type: object
+      properties:
+        commitSha:
+          type: string
+        summary:
+          type: string
+        riskLevel:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, CRITICAL]
+        riskScore:
+          type: integer
+          minimum: 0
+          maximum: 100
+        riskScoreMax:
+          type: integer
+          example: 100
+        riskScoreInterpretation:
+          type: string
+        riskFactors:
+          type: array
+          items:
+            type: object
+            properties:
+              statement:
+                type: string
+              kind:
+                type: string
+                enum: [FACT, HISTORICAL, HYPOTHESIS, RECOMMENDATION, UNKNOWN]
+              evidenceIds:
+                type: array
+                items:
+                  type: string
+        agentStatus:
+          type: string
+          enum: [COMPLETED, DETERMINISTIC_FALLBACK, BUDGET_EXHAUSTED]
+        investigationSummary:
+          type: array
+          items:
+            type: object
+            properties:
+              tool:
+                type: string
+              summary:
+                type: string
+    AnalysisReport:
+      type: object
+      properties:
+        id:
+          type: string
+        commitSha:
+          type: string
+        pullRequestNumber:
+          type: integer
+          nullable: true
+        riskLevel:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, CRITICAL]
+        riskScore:
+          type: integer
+          minimum: 0
+          maximum: 100
+        riskScoreMax:
+          type: integer
+          example: 100
+        riskScoreInterpretation:
+          type: string
+        riskReasons:
+          type: array
+          items:
+            type: string
+        changedFiles:
+          type: array
+          items:
+            type: object
+        changedFunctions:
+          type: array
+          items:
+            type: object
+        impactedFunctions:
+          type: array
+          items:
+            type: object
+        impactedServices:
+          type: array
+          items:
+            type: string
+        paths:
+          type: array
+          items:
+            type: object
+        recommendedTests:
+          type: array
+          items:
+            type: object
+        relatedIncidents:
+          type: array
+          items:
+            type: object
+        uncertainties:
+          type: array
+          items:
+            type: string
