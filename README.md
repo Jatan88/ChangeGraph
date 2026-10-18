@@ -22,6 +22,101 @@ In local development the UI is a Vite app on port 5173 and proxies `/api` to the
 
 Each project graph is named `cg_` plus the project id with hyphens removed. The API checks project ownership on every project route. A missing or unowned project returns 404. PostgreSQL and FalkorDB are separate stores: project creation saves the graph name first, then initializes the graph. `graphStatus` is `READY` or `FAILED`. Retry uses the same stored name. Deleting a project requires confirmation in the UI and `confirm=true` on the API, and removes only the graph stored for that project.
 
+### Graph data model
+
+One FalkorDB graph per project. Every node is merged on `id`.
+
+| Label | id | Properties |
+| --- | --- | --- |
+| Repository | GitHub repository id | `owner`, `name`, `url` |
+| File | repository-relative path | `path`, `packageName`, `parseError`, `importSummary` |
+| Function | `path#qualifiedSignature` | `name`, `signature`, `qualifiedSignature`, `filePath`, `className`, `isTest`, `startLine`, `endLine`, `unresolvedCallCount` |
+| Service | qualified class or module name | `name`, `basis` |
+| Test | same id as the test function | `name`, `filePath`, `signature` |
+| Commit | commit sha | `sha`, `message`, `committedAt`, `limitations` |
+| Incident | incident id | `title`, `summary`, `sourceType`, `isSynthetic`, `scenarioKey`, `updatedAt` |
+| Evidence | evidence id | `evidenceType`, `verificationStatus`, `confidence`, `summary`, `sourceType`, `isSynthetic`, `functionId`, `updatedAt` |
+
+`qualifiedSignature` is the qualified class or module, a `#`, and the signature, so a function id contains two `#` characters. `basis` is the annotation or decorator that marked the service (`Service`, `Component`, `Controller`, `RestController`, `Repository`, `Injectable`, `Module`, `Router`). `functionId` on Evidence is the Function id it refers to. It is a property, not an edge. `changeType` lives on the commit edges.
+
+```mermaid
+flowchart LR
+  Commit -->|CHANGES_FILE| File
+  Commit -->|CHANGES_FUNCTION| Function
+  File -->|CONTAINS| Function
+  File -->|BELONGS_TO| Service
+  Function -->|CALLS| Function
+  Test -->|TESTS| Function
+  Service -->|DEPENDS_ON| Service
+  Evidence -->|REPORTS_ON| Incident
+  Evidence -->|SUPPORTS_CAUSE| Incident
+  Evidence -->|SUPPORTS_RESOLUTION| Incident
+  Evidence -->|VALIDATES_FIX| Incident
+```
+
+`DEPENDS_ON` is written when a resolved call leaves one annotated service for another. A test function that calls a non-test function also gets a `TESTS` edge. `CALLS` is written for other resolved calls.
+
+### Cypher and the impact walk
+
+FalkorDB runs a fixed set of queries. The application chooses the label and the relationship type. Property values are parameters.
+
+Creating a project runs `RETURN 1 AS ok` on the new graph name, which creates that graph. Deleting a project calls `deleteGraph()` on that name only.
+
+Ingestion merges one node at a time, then one edge at a time:
+
+```cypher
+MERGE (n:Function {id: $id})
+SET n.name = $p0, n.signature = $p1, n.filePath = $p2, n.className = $p3, n.isTest = $p4
+```
+
+Repository, File, Service, Test, Commit, Incident, and Evidence use the same `MERGE` on `id`. Edges are merged after both endpoints exist:
+
+```cypher
+MATCH (a:Function {id: $from}), (b:Function {id: $to})
+MERGE (a)-[:CALLS]->(b)
+
+MATCH (a:Commit {id: $from}), (b:Function {id: $to})
+MERGE (a)-[r:CHANGES_FUNCTION]->(b)
+SET r.changeType = $changeType
+
+MATCH (a:Evidence {id: $from}), (b:Incident {id: $to})
+MERGE (a)-[:REPORTS_ON]->(b)
+```
+
+`CONTAINS`, `BELONGS_TO`, `TESTS`, `DEPENDS_ON`, `CHANGES_FILE`, `SUPPORTS_CAUSE`, `SUPPORTS_RESOLUTION`, and `VALIDATES_FIX` use that same `MATCH` then `MERGE`. Removing one evidence relationship is `MATCH ... DELETE r`. Removing a node is:
+
+```cypher
+MATCH (n:Function {id: $id}) DETACH DELETE n
+```
+
+Impact analysis and the reviewer load a bounded snapshot, at most 500 nodes of each label and 500 edges of each type:
+
+```cypher
+MATCH (n:Function)
+RETURN n.id AS id, n.name AS name, n.signature AS signature, n.qualifiedSignature AS qualifiedSignature,
+       n.filePath AS filePath, n.className AS className, n.isTest AS isTest,
+       n.startLine AS startLine, n.endLine AS endLine, n.unresolvedCallCount AS unresolvedCallCount
+LIMIT 500
+
+MATCH (a)-[r:CALLS]->(b)
+RETURN a.id AS source, b.id AS target, r.changeType AS changeType
+LIMIT 500
+```
+
+The same read is issued for every label and every relationship type. `ImpactTraversal` then builds adjacency lists from `CALLS` and walks them breadth-first from the changed functions. Callers go upstream, default depth 3. Callees go downstream, default depth 2. The walk stops at `ANALYSIS_MAX_NODES` (default 100). A service boundary is recorded when the changed function and its callers or callees belong to more than one service, or when a `DEPENDS_ON` edge connects those services. A missing direct test is a changed function with no `TESTS` edge from a test. Related incident evidence is an Evidence node whose `functionId` is that function, connected to an Incident by `REPORTS_ON`, `SUPPORTS_CAUSE`, `SUPPORTS_RESOLUTION`, or `VALIDATES_FIX`.
+
+Each reviewer tool stores the Cypher that describes the question it answered. Activity shows that text. The variable-length form for a trace is:
+
+```cypher
+MATCH (seed:Function)
+WHERE seed.id IN ['server/payment.ts#PaymentService#retryPayment(order)']
+OPTIONAL MATCH (caller:Function)-[:CALLS*1..3]->(seed)
+OPTIONAL MATCH (seed)-[:CALLS*1..2]->(callee:Function)
+RETURN seed.id, caller.id, callee.id
+```
+
+The other stored questions read `CHANGES_FILE` and `CHANGES_FUNCTION` from the commit, `TESTS` into the changed functions, incident edges whose `functionId` is in that set, and `DEPENDS_ON` from the service named by `Function.className`.
+
 ### How a change is processed
 
 A push on the selected branch, an opened or updated pull request, or a branch re-index becomes a workflow run. Progress is stored in PostgreSQL and streamed to the Activity page.
