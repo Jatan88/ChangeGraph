@@ -6,35 +6,44 @@ import com.changegraph.backend.project.ProjectRepositoryLink;
 import com.changegraph.backend.project.ProjectRepositoryLinkRepository;
 import com.changegraph.backend.project.ProjectResponse;
 import com.changegraph.backend.user.UserAccount;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
 @Service
 public class GitHubRepositoryService {
 
+    private static final Logger log = LoggerFactory.getLogger(GitHubRepositoryService.class);
+
     private final ProjectAccess access;
     private final ProjectRepositoryLinkRepository links;
     private final GitHubClient github;
     private final GitHubCommitPoller commitPoller;
+    private final ObjectProvider<RepositoryWorkflows> workflows;
 
     public GitHubRepositoryService(
             ProjectAccess access,
             ProjectRepositoryLinkRepository links,
             GitHubClient github,
-            GitHubCommitPoller commitPoller) {
+            GitHubCommitPoller commitPoller,
+            ObjectProvider<RepositoryWorkflows> workflows) {
         this.access = access;
         this.links = links;
         this.github = github;
         this.commitPoller = commitPoller;
+        this.workflows = workflows;
     }
 
     @Transactional
-    public ProjectResponse.RepositorySummary link(UserAccount owner, UUID projectId, String repositoryUrl) {
+    public ProjectResponse.RepositorySummary link(UserAccount owner, UUID projectId, String repositoryUrl, String branch) {
         var project = access.requireProject(owner, projectId);
         if (links.findByProjectId(project.getId()).isPresent()) {
             throw new ApiException(HttpStatus.CONFLICT, "REPOSITORY_ALREADY_LINKED", "This project already has a repository. Remove it before linking another.");
@@ -50,8 +59,19 @@ public class GitHubRepositoryService {
                 repository.defaultBranch(),
                 repository.url(),
                 Instant.now());
+        link.setSelectedBranch(resolveBranch(repository, branch));
         link.setLastSyncedAt(Instant.now());
+        String baseline = currentTip(link);
+        if (baseline != null) {
+            link.setLastSeenCommitSha(baseline);
+        }
         links.save(link);
+        log.info("Linked {}/{} branch {} for project {} at commit {}. Later commits on this branch start a review. History already on the branch does not.",
+                link.getOwnerName(),
+                link.getRepositoryName(),
+                link.branchForSync(),
+                project.getId(),
+                baseline == null ? "none" : baseline.substring(0, Math.min(7, baseline.length())));
         return summary(link);
     }
 
@@ -98,6 +118,50 @@ public class GitHubRepositoryService {
     }
 
     @Transactional(readOnly = true)
+    public BranchListResponse branches(UserAccount owner, UUID projectId) {
+        ProjectRepositoryLink link = linked(owner, projectId);
+        GitHubModels.Repository repository = github.getPublicRepository(link.getOwnerName(), link.getRepositoryName());
+        GitHubModels.BranchPage page = github.listBranches(link.getOwnerName(), link.getRepositoryName());
+        List<BranchListResponse.BranchItem> items = new ArrayList<>();
+        for (String name : page.names()) {
+            items.add(new BranchListResponse.BranchItem(
+                    name,
+                    name.equals(repository.defaultBranch()),
+                    name.equals(link.branchForSync())));
+        }
+        return new BranchListResponse(repository.defaultBranch(), link.branchForSync(), page.truncated(), items);
+    }
+
+    @Transactional
+    public BranchSelectionResponse selectBranch(UserAccount owner, UUID projectId, String branch) {
+        var project = access.requireProject(owner, projectId);
+        ProjectRepositoryLink link = access.requireRepository(project.getId());
+        GitHubModels.Repository repository = github.getPublicRepository(link.getOwnerName(), link.getRepositoryName());
+        if (repository.id() != link.getGithubRepositoryId()) {
+            throw new ApiException(HttpStatus.CONFLICT, "REPOSITORY_IDENTITY_CHANGED", "The linked repository id no longer matches GitHub.");
+        }
+        String selected = resolveBranch(repository, branch);
+        link.setDefaultBranch(repository.defaultBranch());
+        link.setSelectedBranch(selected);
+        link.setLastSyncedAt(Instant.now());
+        commitPoller.evict(project.getId());
+        UUID workflowId = null;
+        List<GitHubModels.CommitSummary> commits = github.listCommits(link.getOwnerName(), link.getRepositoryName(), selected, 1);
+        if (!commits.isEmpty() && commits.getFirst().sha() != null && !commits.getFirst().sha().isBlank()) {
+            link.setLastSeenCommitSha(commits.getFirst().sha());
+            RepositoryWorkflows starter = workflows.getIfAvailable();
+            if (starter != null) {
+                workflowId = starter.syncBranch(project.getId(), selected, commits.getFirst().sha());
+            }
+        }
+        log.info("Selected branch {} for project {} at commit {}",
+                selected,
+                project.getId(),
+                commits.isEmpty() ? "none" : commits.getFirst().sha());
+        return new BranchSelectionResponse(summary(link), workflowId);
+    }
+
+    @Transactional(readOnly = true)
     public List<GitHubModels.PullRequest> pulls(UserAccount owner, UUID projectId) {
         var link = linked(owner, projectId);
         github.getPublicRepository(link.getOwnerName(), link.getRepositoryName());
@@ -115,8 +179,39 @@ public class GitHubRepositoryService {
                 link.getOwnerName(),
                 link.getRepositoryName(),
                 link.getDefaultBranch(),
+                link.branchForSync(),
                 link.getRepositoryUrl(),
                 "public",
                 link.getLastSyncedAt());
+    }
+
+    private String currentTip(ProjectRepositoryLink link) {
+        try {
+            List<GitHubModels.CommitSummary> commits = github.listCommits(
+                    link.getOwnerName(), link.getRepositoryName(), link.branchForSync(), 1);
+            if (commits.isEmpty() || commits.getFirst().sha() == null || commits.getFirst().sha().isBlank()) {
+                return null;
+            }
+            return commits.getFirst().sha();
+        } catch (RuntimeException ex) {
+            log.warn("Could not record the current commit while linking {}/{} for project {}",
+                    link.getOwnerName(), link.getRepositoryName(), link.getProject().getId(), ex);
+            return null;
+        }
+    }
+
+    private String resolveBranch(GitHubModels.Repository repository, String requested) {
+        if (requested == null || requested.isBlank()) {
+            return repository.defaultBranch();
+        }
+        String branch = requested.trim();
+        if (!BranchNames.isSafe(branch)) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "INVALID_BRANCH", "Branch name is not allowed.");
+        }
+        GitHubModels.BranchPage page = github.listBranches(repository.owner(), repository.name());
+        if (!page.names().contains(branch)) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "BRANCH_NOT_FOUND", "That branch was not found on the public repository.");
+        }
+        return branch;
     }
 }

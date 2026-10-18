@@ -41,6 +41,12 @@ public class AnalysisRecord {
     @Column(name = "error_code", length = 64)
     private String errorCode;
 
+    @Column(name = "kind", length = 16)
+    private String kind;
+
+    @Column(name = "status", length = 32)
+    private String status;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -104,6 +110,22 @@ public class AnalysisRecord {
 
     public void setErrorCode(String errorCode) {
         this.errorCode = errorCode;
+    }
+
+    public String getKind() {
+        return kind;
+    }
+
+    public void setKind(String kind) {
+        this.kind = kind;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
     }
 
     public Instant getCreatedAt() {

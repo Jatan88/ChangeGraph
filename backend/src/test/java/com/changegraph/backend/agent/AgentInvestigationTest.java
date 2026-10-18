@@ -22,11 +22,15 @@ class AgentInvestigationTest {
     @Test
     void plannerChoosesToolsFromFindingsAndTheReportStaysGrounded() {
         ScriptedLlm llm = new ScriptedLlm("contextual");
-        ChangeImpactAgent agent = new ChangeImpactAgent(llm, generator, 8, 6, jsonMapper);
+        ChangeImpactAgent agent = new ChangeImpactAgent(llm, generator, jsonMapper);
 
         AgentReport report = agent.investigate(state(sampleGraph(), 8, 6));
 
         assertEquals("COMPLETED", report.agentStatus());
+        assertTrue(report.investigationSummary().stream().anyMatch(step ->
+                "get_commit_changes".equals(step.tool())
+                        && step.query() != null
+                        && step.query().contains("MATCH (c:Commit {id: 'abc1234'})")));
         assertTrue(report.investigationSummary().stream().anyMatch(step -> "trace_function_dependencies".equals(step.tool())));
         assertTrue(report.investigationSummary().stream().anyMatch(step -> "find_related_tests".equals(step.tool())));
         assertTrue(report.investigationSummary().stream().anyMatch(step -> "inspect_evidence".equals(step.tool())));
@@ -46,7 +50,7 @@ class AgentInvestigationTest {
 
     @Test
     void invalidModelOutputFallsBackToDeterministicAnalysis() {
-        ChangeImpactAgent agent = new ChangeImpactAgent(new ScriptedLlm("invalid"), generator, 8, 4, jsonMapper);
+        ChangeImpactAgent agent = new ChangeImpactAgent(new ScriptedLlm("invalid"), generator, jsonMapper);
 
         AgentReport report = agent.investigate(state(sampleGraph(), 8, 4));
 
@@ -57,20 +61,20 @@ class AgentInvestigationTest {
     }
 
     @Test
-    void toolBudgetStopsFurtherInvestigationAndOmitsUncollectedFacts() {
-        ChangeImpactAgent agent = new ChangeImpactAgent(new ScriptedLlm("contextual"), generator, 2, 4, jsonMapper);
+    void investigationContinuesUntilThePlannerFinishes() {
+        ChangeImpactAgent agent = new ChangeImpactAgent(new ScriptedLlm("contextual"), generator, jsonMapper);
 
         AgentReport report = agent.investigate(state(sampleGraph(), 2, 4));
 
-        assertEquals("BUDGET_EXHAUSTED", report.agentStatus());
+        assertEquals("COMPLETED", report.agentStatus());
         assertTrue(report.impactedComponents().stream().anyMatch(component -> "caller".equals(component.id())));
-        assertTrue(report.recommendedTests().isEmpty());
-        assertTrue(report.investigationSummary().stream().noneMatch(step -> "find_related_tests".equals(step.tool())));
+        assertTrue(report.investigationSummary().stream().anyMatch(step -> "find_related_tests".equals(step.tool())));
+        assertTrue(report.investigationSummary().stream().anyMatch(step -> "inspect_evidence".equals(step.tool())));
     }
 
     @Test
     void repeatedToolCallIsNotExecutedTwice() {
-        ChangeImpactAgent agent = new ChangeImpactAgent(new ScriptedLlm("repeat-trace"), generator, 6, 3, jsonMapper);
+        ChangeImpactAgent agent = new ChangeImpactAgent(new ScriptedLlm("repeat-trace"), generator, jsonMapper);
 
         AgentReport report = agent.investigate(state(sampleGraph(), 6, 3));
 
@@ -101,7 +105,7 @@ class AgentInvestigationTest {
         graph.mergeNode(NodeType.FUNCTION, "pay", Map.of(
                 "name", "retryPayment", "signature", "retryPayment()", "filePath", "Pay.java", "className", "payment.Pay", "isTest", false, "unresolvedCallCount", 0));
         graph.mergeEdge(EdgeType.CHANGES_FUNCTION, "abc1234", "pay", Map.of("changeType", "MODIFIED"));
-        ChangeImpactAgent agent = new ChangeImpactAgent(new ScriptedLlm("unavailable"), generator, 6, 3, jsonMapper);
+        ChangeImpactAgent agent = new ChangeImpactAgent(new ScriptedLlm("unavailable"), generator, jsonMapper);
 
         AgentReport report = agent.investigate(state(graph, 6, 3));
 

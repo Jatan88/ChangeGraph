@@ -9,5 +9,7 @@ public interface ProjectRepositoryLinkRepository extends JpaRepository<ProjectRe
 
     Optional<ProjectRepositoryLink> findByProjectId(UUID projectId);
 
+    java.util.List<ProjectRepositoryLink> findByGithubRepositoryId(long githubRepositoryId);
+
     void deleteByProjectId(UUID projectId);
 }

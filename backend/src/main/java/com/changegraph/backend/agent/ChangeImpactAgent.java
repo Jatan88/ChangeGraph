@@ -1,5 +1,6 @@
 package com.changegraph.backend.agent;
 
+import com.changegraph.backend.analysis.AnalysisPersistence;
 import com.changegraph.backend.analysis.AnalysisRequest;
 import com.changegraph.backend.analysis.RiskScoringService;
 import com.changegraph.backend.common.ApiException;
@@ -15,7 +16,6 @@ import com.changegraph.backend.project.ProjectGraph;
 import com.changegraph.backend.project.ProjectRepositoryLink;
 import com.changegraph.backend.user.UserAccount;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.json.JsonMapper;
@@ -35,8 +35,7 @@ public class ChangeImpactAgent {
     private final AgentPlanner planner;
     private final AgentPolicy policy;
     private final AgentReportGenerator generator;
-    private final int maxToolCalls;
-    private final int maxIterations;
+    private final AnalysisPersistence persistence;
 
     @Autowired
     public ChangeImpactAgent(
@@ -45,10 +44,9 @@ public class ChangeImpactAgent {
             GraphStore graphStore,
             IngestionService ingestionService,
             LlmClient llm,
+            AnalysisPersistence persistence,
             RiskScoringService scoring,
-            JsonMapper jsonMapper,
-            @Value("${changegraph.agent.max-tool-calls:5}") int maxToolCalls,
-            @Value("${changegraph.agent.max-iterations:4}") int maxIterations) {
+            JsonMapper jsonMapper) {
         this.access = access;
         this.github = github;
         this.graphStore = graphStore;
@@ -58,11 +56,10 @@ public class ChangeImpactAgent {
         this.planner = new AgentPlanner(llm, jsonMapper);
         this.policy = new AgentPolicy();
         this.generator = new AgentReportGenerator(scoring);
-        this.maxToolCalls = Math.max(2, Math.min(maxToolCalls, 8));
-        this.maxIterations = Math.max(1, Math.min(maxIterations, 6));
+        this.persistence = persistence;
     }
 
-    ChangeImpactAgent(LlmClient llm, AgentReportGenerator generator, int maxToolCalls, int maxIterations, JsonMapper jsonMapper) {
+    ChangeImpactAgent(LlmClient llm, AgentReportGenerator generator, JsonMapper jsonMapper) {
         this.access = null;
         this.github = null;
         this.graphStore = null;
@@ -72,8 +69,7 @@ public class ChangeImpactAgent {
         this.planner = new AgentPlanner(llm, jsonMapper);
         this.policy = new AgentPolicy();
         this.generator = generator;
-        this.maxToolCalls = maxToolCalls;
-        this.maxIterations = maxIterations;
+        this.persistence = null;
     }
 
     public AgentReport investigate(UserAccount owner, UUID projectId, AnalysisRequest request) {
@@ -109,7 +105,23 @@ public class ChangeImpactAgent {
         if (graph.node(sha).isEmpty()) {
             throw new ApiException(HttpStatus.CONFLICT, "COMMIT_NOT_INGESTED", "The commit could not be ingested, so it was not investigated.");
         }
-        return investigate(new AgentState(project.getId(), sha, pullNumber, graph, maxToolCalls, maxIterations));
+        AgentState state = new AgentState(project.getId(), sha, pullNumber, graph, Integer.MAX_VALUE, Integer.MAX_VALUE);
+        state.recordLoad(graphStore.loadScript(mapping.getGraphName(), 500));
+        AgentReport report = investigate(state);
+        persistence.saveAgent(project.getId(), UUID.randomUUID(), report);
+        return report;
+    }
+
+    public void record(UUID projectId, String commitSha, Integer pullRequestNumber, CodeGraph graph, String loadScript) {
+        if (persistence == null || graph == null || commitSha == null || commitSha.isBlank()) {
+            return;
+        }
+        AgentState state = new AgentState(projectId, commitSha, pullRequestNumber, graph, Integer.MAX_VALUE, Integer.MAX_VALUE);
+        if (loadScript != null && !loadScript.isBlank()) {
+            state.recordLoad(loadScript);
+        }
+        AgentReport report = investigate(state);
+        persistence.saveAgent(projectId, UUID.randomUUID(), report);
     }
 
     public AgentReport investigate(AgentState state) {
@@ -117,8 +129,8 @@ public class ChangeImpactAgent {
         if (!llm.available()) {
             return fallback(state, "The language model is not configured.");
         }
-        boolean finished = false;
-        for (int iteration = 0; iteration < state.maxIterations(); iteration++) {
+        int repeated = 0;
+        while (true) {
             AgentPlanner.Plan plan;
             try {
                 plan = planner.next(state, registry);
@@ -128,7 +140,6 @@ public class ChangeImpactAgent {
                 return fallback(state, "The model response could not be used.");
             }
             if (plan.finish()) {
-                finished = true;
                 state.note("planner", "The investigation stopped after the available graph evidence was reviewed.");
                 break;
             }
@@ -137,21 +148,19 @@ public class ChangeImpactAgent {
                 Map<String, String> arguments = policy.sanitize(tool, plan.arguments());
                 policy.check(state, tool, arguments);
                 execute(state, tool.name(), arguments);
+                repeated = 0;
             } catch (AgentRejectedException ex) {
-                if ("BUDGET".equals(ex.code())) {
-                    state.note("policy", "Stopped because the investigation budget was reached.");
-                    return generator.generate(state, "BUDGET_EXHAUSTED");
-                }
                 if ("DUPLICATE".equals(ex.code())) {
                     state.note("policy", ex.getMessage());
+                    repeated++;
+                    if (repeated >= registry.tools().size()) {
+                        state.note("planner", "The investigation stopped after the available graph evidence was reviewed.");
+                        break;
+                    }
                     continue;
                 }
                 return fallback(state, "The model requested an investigation step that is not allowed.");
             }
-        }
-        if (!finished) {
-            state.note("policy", "Stopped because the investigation iteration budget was reached.");
-            return generator.generate(state, "BUDGET_EXHAUSTED");
         }
         return generator.generate(state, "COMPLETED");
     }
@@ -169,7 +178,7 @@ public class ChangeImpactAgent {
         try {
             AgentTool tool = registry.require(toolName);
             Map<String, String> safe = policy.sanitize(tool, arguments);
-            if (state.alreadyCalled(AgentPolicy.callKey(toolName, safe)) || state.toolCalls() >= state.maxToolCalls()) {
+            if (state.alreadyCalled(AgentPolicy.callKey(toolName, safe))) {
                 return;
             }
             execute(state, toolName, safe);

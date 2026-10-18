@@ -149,6 +149,7 @@ public class ProjectService {
                         link.getOwnerName(),
                         link.getRepositoryName(),
                         link.getDefaultBranch(),
+                        link.branchForSync(),
                         link.getRepositoryUrl(),
                         "public",
                         link.getLastSyncedAt()),
@@ -162,7 +163,7 @@ public class ProjectService {
                         ingestion.getCreatedAt()),
                 analysis == null ? null : new ProjectResponse.ActivitySummary(
                         analysis.getId(),
-                        analysis.getRiskLevel() == null ? "UNKNOWN" : analysis.getRiskLevel(),
+                        analysis.getStatus() == null || analysis.getStatus().isBlank() ? "COMPLETED" : analysis.getStatus(),
                         analysis.getCommitSha(),
                         analysis.getCreatedAt()));
     }

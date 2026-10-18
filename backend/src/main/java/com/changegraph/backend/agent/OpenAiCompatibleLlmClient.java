@@ -24,6 +24,7 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
     private final String apiKey;
     private final String model;
     private final int maxOutputTokens;
+    private final Duration requestTimeout;
     private final boolean configured;
 
     public OpenAiCompatibleLlmClient(
@@ -36,7 +37,8 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         this.jsonMapper = jsonMapper;
         this.apiKey = apiKey == null ? "" : apiKey.trim();
         this.model = model == null || model.isBlank() ? "gpt-4o-mini" : model.trim();
-        this.maxOutputTokens = Math.max(100, Math.min(maxOutputTokens, 2000));
+        this.maxOutputTokens = Math.max(100, Math.min(maxOutputTokens, 4000));
+        this.requestTimeout = Duration.ofMillis(Math.max(5_000, Math.min(timeoutMs, 90_000)));
         URI endpoint = null;
         boolean usable = !this.apiKey.isBlank();
         if (usable) {
@@ -63,6 +65,28 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         }
     }
 
+    private ObjectNode requestBody(boolean primary) {
+        ObjectNode body = jsonMapper.createObjectNode();
+        body.put("model", model);
+        if (primary) {
+            body.put("temperature", 0);
+            body.put("max_tokens", maxOutputTokens);
+        } else {
+            body.put("max_completion_tokens", maxOutputTokens);
+        }
+        return body;
+    }
+
+    private HttpResponse<String> send(ObjectNode body) throws java.io.IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(completions)
+                .timeout(requestTimeout)
+                .header("Authorization", "Bearer " + apiKey)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(jsonMapper.writeValueAsString(body)))
+                .build();
+        return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
     @Override
     public boolean available() {
         return configured;
@@ -73,29 +97,38 @@ public class OpenAiCompatibleLlmClient implements LlmClient {
         if (!configured) {
             throw new LlmUnavailableException("The language model is not configured.");
         }
-        ObjectNode body = jsonMapper.createObjectNode();
-        body.put("model", model);
-        body.put("temperature", 0);
-        body.put("max_tokens", maxOutputTokens);
+        ObjectNode body = requestBody(true);
         var messages = body.putArray("messages");
         messages.addObject().put("role", "system").put("content", systemPrompt);
         messages.addObject().put("role", "user").put("content", userPrompt);
-        HttpRequest request = HttpRequest.newBuilder(completions)
-                .timeout(Duration.ofSeconds(20))
-                .header("Authorization", "Bearer " + apiKey)
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(jsonMapper.writeValueAsString(body)))
-                .build();
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = send(body);
+            if (response.statusCode() == 400) {
+                ObjectNode retry = requestBody(false);
+                retry.set("messages", body.get("messages"));
+                response = send(retry);
+            }
             if (response.statusCode() == 429 || response.statusCode() >= 500) {
+                log.warn("LLM request failed with HTTP {}", response.statusCode());
                 throw new LlmUnavailableException("The language model was unavailable.");
             }
             if (response.statusCode() != 200) {
+                String detail = response.body() == null ? "" : response.body();
+                if (detail.length() > 300) {
+                    detail = detail.substring(0, 300);
+                }
+                log.warn("LLM request was rejected with HTTP {}: {}", response.statusCode(), detail);
                 throw new LlmUnavailableException("The language model rejected the request.");
             }
             var root = jsonMapper.readTree(response.body());
-            String content = root.path("choices").path(0).path("message").path("content").asString("");
+            var message = root.path("choices").path(0).path("message");
+            String content = message.path("content").asString("");
+            if (content.isBlank()) {
+                content = message.path("reasoning").asString("");
+            }
+            if (content.isBlank()) {
+                content = message.path("reasoning_content").asString("");
+            }
             if (content.isBlank()) {
                 throw new LlmUnavailableException("The language model returned an empty response.");
             }

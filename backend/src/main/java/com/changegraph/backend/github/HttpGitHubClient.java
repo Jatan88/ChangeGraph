@@ -21,6 +21,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 @Component
 public class HttpGitHubClient implements GitHubClient {
@@ -125,12 +126,7 @@ public class HttpGitHubClient implements GitHubClient {
             throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "INVALID_PULL_REQUEST", "Pull request number must be positive.");
         }
         JsonNode json = getJson("/repos/" + encode(owner) + "/" + encode(name) + "/pulls/" + number, ACCEPT);
-        return new GitHubModels.PullRequest(
-                json.path("number").asInt(number),
-                Text.clamp(json.path("title").asString(""), 200),
-                json.path("head").path("sha").asString(""),
-                json.path("base").path("sha").asString(""),
-                json.path("html_url").asString(""));
+        return pullRequest(json, number);
     }
 
     @Override
@@ -144,12 +140,7 @@ public class HttpGitHubClient implements GitHubClient {
             return pulls;
         }
         for (JsonNode node : json) {
-            pulls.add(new GitHubModels.PullRequest(
-                    node.path("number").asInt(),
-                    Text.clamp(node.path("title").asString(""), 200),
-                    node.path("head").path("sha").asString(""),
-                    node.path("base").path("sha").asString(""),
-                    node.path("html_url").asString("")));
+            pulls.add(pullRequest(node, node.path("number").asInt()));
         }
         return pulls;
     }
@@ -224,6 +215,161 @@ public class HttpGitHubClient implements GitHubClient {
         return files;
     }
 
+    @Override
+    public GitHubModels.BranchPage listBranches(String owner, String name) {
+        Fetched fetched = send(
+                "/repos/" + encode(owner) + "/" + encode(name) + "/branches?per_page=100",
+                ACCEPT);
+        if (fetched.status() == 404) {
+            throw inaccessible();
+        }
+        if (fetched.status() != 200) {
+            throw statusException(fetched);
+        }
+        JsonNode json = readTree(fetched.body());
+        List<String> names = new ArrayList<>();
+        if (json.isArray()) {
+            for (JsonNode node : json) {
+                String branch = node.path("name").asString("");
+                if (BranchNames.isSafe(branch)) {
+                    names.add(branch);
+                }
+            }
+        }
+        boolean truncated = fetched.body() != null && linkHeaderHasNext(fetched);
+        return new GitHubModels.BranchPage(names, truncated || names.size() >= 100);
+    }
+
+    @Override
+    public void createBranch(String owner, String name, String branch, String fromSha) {
+        requireFixBranch(branch);
+        requireSha(fromSha);
+        String body = json(Map.of("ref", "refs/heads/" + branch, "sha", fromSha));
+        Fetched fetched = send("POST", "/repos/" + encode(owner) + "/" + encode(name) + "/git/refs", ACCEPT, body);
+        if (fetched.status() != 201) {
+            throw writeFailed(fetched);
+        }
+    }
+
+    @Override
+    public void updateFile(String owner, String name, String branch, String path, String message, String content) {
+        requireFixBranch(branch);
+        if (!com.changegraph.backend.parser.JavaSourceParser.isSafePath(path)) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "INVALID_PATH", "The fix path is not safe to update.");
+        }
+        if (content == null || content.length() > 100_000) {
+            throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "INVALID_PATCH", "The fix content is empty or too large.");
+        }
+        String existingSha = null;
+        Fetched current = send(
+                "GET",
+                "/repos/" + encode(owner) + "/" + encode(name) + "/contents/" + encodePath(path) + "?ref=" + encode(branch),
+                ACCEPT,
+                null);
+        if (current.status() == 200) {
+            existingSha = readTree(current.body()).path("sha").asString(null);
+        } else if (current.status() != 404) {
+            throw writeFailed(current);
+        }
+        Map<String, String> payload = new java.util.LinkedHashMap<>();
+        payload.put("message", Text.clamp(message, 200));
+        payload.put("content", java.util.Base64.getEncoder().encodeToString(content.getBytes(StandardCharsets.UTF_8)));
+        payload.put("branch", branch);
+        if (existingSha != null && !existingSha.isBlank()) {
+            payload.put("sha", existingSha);
+        }
+        Fetched fetched = send(
+                "PUT",
+                "/repos/" + encode(owner) + "/" + encode(name) + "/contents/" + encodePath(path),
+                ACCEPT,
+                json(payload));
+        if (fetched.status() != 200 && fetched.status() != 201) {
+            throw writeFailed(fetched);
+        }
+    }
+
+    @Override
+    public GitHubModels.CreatedPullRequest openPullRequest(
+            String owner,
+            String name,
+            String title,
+            String head,
+            String base,
+            String body) {
+        requireFixBranch(head);
+        if (!BranchNames.isSafe(base) || head.equals(base)) {
+            throw new ApiException(
+                    HttpStatus.UNPROCESSABLE_CONTENT,
+                    "BRANCH_NOT_ALLOWED",
+                    "A fix pull request must target a different branch from the fix branch.");
+        }
+        Map<String, String> payload = new java.util.LinkedHashMap<>();
+        payload.put("title", Text.clamp(title, 200));
+        payload.put("head", head);
+        payload.put("base", base);
+        payload.put("body", body == null ? "" : body.substring(0, Math.min(body.length(), 6000)));
+        Fetched fetched = send("POST", "/repos/" + encode(owner) + "/" + encode(name) + "/pulls", ACCEPT, json(payload));
+        if (fetched.status() != 201) {
+            throw writeFailed(fetched);
+        }
+        JsonNode json = readTree(fetched.body());
+        return new GitHubModels.CreatedPullRequest(
+                json.path("number").asInt(),
+                json.path("html_url").asString(""),
+                json.path("head").path("ref").asString(head),
+                json.path("base").path("ref").asString(base));
+    }
+
+    private static GitHubModels.PullRequest pullRequest(JsonNode json, int fallbackNumber) {
+        return new GitHubModels.PullRequest(
+                json.path("number").asInt(fallbackNumber),
+                Text.clamp(json.path("title").asString(""), 200),
+                json.path("head").path("sha").asString(""),
+                json.path("base").path("sha").asString(""),
+                json.path("html_url").asString(""),
+                json.path("head").path("ref").asString(""),
+                json.path("base").path("ref").asString(""));
+    }
+
+    private JsonNode readTree(String body) {
+        try {
+            return jsonMapper.readTree(body);
+        } catch (RuntimeException ex) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_UNAVAILABLE", "GitHub returned a response that could not be read.");
+        }
+    }
+
+    private String json(Object value) {
+        try {
+            return jsonMapper.writeValueAsString(value);
+        } catch (RuntimeException ex) {
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_UNAVAILABLE", "The GitHub request could not be encoded.");
+        }
+    }
+
+    private static boolean linkHeaderHasNext(Fetched fetched) {
+        return false;
+    }
+
+    private static void requireFixBranch(String branch) {
+        if (!BranchNames.isFixBranch(branch)) {
+            throw new ApiException(
+                    HttpStatus.UNPROCESSABLE_CONTENT,
+                    "BRANCH_NOT_ALLOWED",
+                    "Generated fixes can only be written to a changegraph/fix branch.");
+        }
+    }
+
+    private static ApiException writeFailed(Fetched fetched) {
+        if (fetched.status() == 401 || fetched.status() == 403) {
+            return new ApiException(
+                    HttpStatus.BAD_GATEWAY,
+                    "GITHUB_WRITE_FORBIDDEN",
+                    "The configured GitHub token cannot create a branch or pull request on this public repository.");
+        }
+        return new ApiException(HttpStatus.BAD_GATEWAY, "GITHUB_WRITE_FAILED", "GitHub did not accept the fix branch or pull request.");
+    }
+
     private JsonNode getJson(String path, String accept) {
         Fetched fetched = send(path, accept);
         if (fetched.status() == 404) {
@@ -240,6 +386,10 @@ public class HttpGitHubClient implements GitHubClient {
     }
 
     private Fetched send(String pathAndQuery, String accept) {
+        return send("GET", pathAndQuery, accept, null);
+    }
+
+    private Fetched send(String method, String pathAndQuery, String accept, String jsonBody) {
         URI uri = apiBase.resolve(pathAndQuery);
         if (!apiBase.getHost().equalsIgnoreCase(uri.getHost()) || !"https".equalsIgnoreCase(uri.getScheme())) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_CONTENT, "INVALID_REPOSITORY_URL", "Only the configured GitHub API host is allowed.");
@@ -252,7 +402,13 @@ public class HttpGitHubClient implements GitHubClient {
         if (!accessToken.isEmpty()) {
             requestBuilder.header("Authorization", "Bearer " + accessToken);
         }
-        HttpRequest request = requestBuilder.GET().build();
+        if (jsonBody == null) {
+            requestBuilder.method(method, HttpRequest.BodyPublishers.noBody());
+        } else {
+            requestBuilder.header("Content-Type", "application/json");
+            requestBuilder.method(method, HttpRequest.BodyPublishers.ofString(jsonBody));
+        }
+        HttpRequest request = requestBuilder.build();
         int attempts = 0;
         while (true) {
             attempts++;

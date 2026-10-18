@@ -19,4 +19,18 @@ public interface GitHubClient {
     List<String> listSourceFiles(String owner, String name, String directory, String ref);
 
     List<String> listRepositorySourceFiles(String owner, String name, String ref);
+
+    GitHubModels.BranchPage listBranches(String owner, String name);
+
+    void createBranch(String owner, String name, String branch, String fromSha);
+
+    void updateFile(String owner, String name, String branch, String path, String message, String content);
+
+    GitHubModels.CreatedPullRequest openPullRequest(
+            String owner,
+            String name,
+            String title,
+            String head,
+            String base,
+            String body);
 }

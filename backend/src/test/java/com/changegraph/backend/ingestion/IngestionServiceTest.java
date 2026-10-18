@@ -47,7 +47,8 @@ class IngestionServiceTest {
                 803389482L,
                 "Jatan88",
                 "HealthyRoute",
-                sha));
+                sha,
+                "main"));
         when(github.getPublicRepository("Jatan88", "HealthyRoute")).thenReturn(new GitHubModels.Repository(
                 803389482L, "Jatan88", "HealthyRoute", "main", "https://github.com/Jatan88/HealthyRoute", true));
         when(github.getCommit("Jatan88", "HealthyRoute", sha)).thenReturn(new GitHubModels.CommitDetail(

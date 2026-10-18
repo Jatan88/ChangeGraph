@@ -34,7 +34,7 @@ export function Avatar({ email, size = 40 }: { email: string; size?: number }) {
       <circle cx={14 + shift(3)} cy={18 + (shift(8) % 18)} r={10 + (shift(1) % 8)} fill={ink} opacity="0.95" />
       <circle cx={46 - (shift(5) % 10)} cy={44} r={12 + (shift(11) % 6)} fill={paper} opacity="0.9" />
       <rect x={28 + (shift(15) % 8)} y="6" width="10" height="28" rx="5" fill={paper} opacity="0.55" transform={`rotate(${shift(2) % 40} 32 20)`} />
-      <text x="32" y="38" textAnchor="middle" fill="#f6f1e7" fontSize="18" fontFamily="IBM Plex Mono, ui-monospace, monospace">
+      <text x="32" y="38" textAnchor="middle" fill="#f6f1e7" fontSize="18" fontFamily="IBM Plex Mono, ui-monospace, monospace" fontWeight="500">
         {initials}
       </text>
     </svg>

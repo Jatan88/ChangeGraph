@@ -77,6 +77,22 @@ public class IngestionService {
         return IngestionJobResponse.from(job);
     }
 
+    @Transactional
+    public IngestionJobResponse queueForProject(UUID projectId, String commitSha) {
+        ProjectGraph graph = access.requireGraph(projectId);
+        if (graph.getStatus() != GraphLifecycle.READY) {
+            throw new ApiException(HttpStatus.CONFLICT, "GRAPH_NOT_READY", "Initialize the project graph before ingestion.");
+        }
+        access.requireRepository(projectId);
+        if (jobs.existsByProjectIdAndStatusIn(projectId, List.of(JobStatus.QUEUED, JobStatus.RUNNING))) {
+            throw new ApiException(HttpStatus.CONFLICT, "INGESTION_IN_PROGRESS", "An ingestion is already running for this project.");
+        }
+        String sha = normalizeSha(commitSha);
+        IngestionJob job = new IngestionJob(UUID.randomUUID(), graph.getProject(), sha, Instant.now());
+        jobs.save(job);
+        return IngestionJobResponse.from(job);
+    }
+
     @Transactional(readOnly = true)
     public PageResponse<IngestionJobResponse> list(UserAccount owner, UUID projectId, int page, int size) {
         Project project = access.requireProject(owner, projectId);
@@ -112,9 +128,12 @@ public class IngestionService {
             String sha = context.requestedSha();
             if (sha == null) {
                 jobService.mark(jobId, JobStatus.RUNNING, "Fetching the latest public commit", null, false);
-                List<GitHubModels.CommitSummary> commits = github.listCommits(context.owner(), context.name(), repository.defaultBranch(), 1);
+                String branch = context.selectedBranch() == null || context.selectedBranch().isBlank()
+                        ? repository.defaultBranch()
+                        : context.selectedBranch();
+                List<GitHubModels.CommitSummary> commits = github.listCommits(context.owner(), context.name(), branch, 1);
                 if (commits.isEmpty() || commits.get(0).sha().isBlank()) {
-                    throw new ApiException(HttpStatus.NOT_FOUND, "COMMIT_NOT_FOUND", "No public commits were found on the default branch.");
+                    throw new ApiException(HttpStatus.NOT_FOUND, "COMMIT_NOT_FOUND", "No public commits were found on the selected branch.");
                 }
                 sha = commits.get(0).sha();
                 jobService.rememberSha(jobId, sha);
@@ -225,6 +244,7 @@ public class IngestionService {
             long githubRepositoryId,
             String owner,
             String name,
-            String requestedSha) {
+            String requestedSha,
+            String selectedBranch) {
     }
 }

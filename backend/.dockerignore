@@ -1,0 +1,6 @@
+target
+src/main/resources/application-local.properties
+src/main/resources/*-local.properties
+.git
+.idea
+*.md

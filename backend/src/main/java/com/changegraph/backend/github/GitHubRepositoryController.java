@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -33,7 +34,7 @@ public class GitHubRepositoryController {
             @PathVariable UUID projectId,
             @Valid @RequestBody LinkRepositoryRequest request) {
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(repositories.link(currentUser.require(), projectId, request.repositoryUrl()));
+                .body(repositories.link(currentUser.require(), projectId, request.repositoryUrl(), request.branch()));
     }
 
     @GetMapping("/repository")
@@ -65,6 +66,18 @@ public class GitHubRepositoryController {
     @GetMapping("/commits/{sha}")
     public GitHubModels.CommitDetail commit(@PathVariable UUID projectId, @PathVariable String sha) {
         return repositories.commit(currentUser.require(), projectId, sha);
+    }
+
+    @GetMapping("/branches")
+    public BranchListResponse branches(@PathVariable UUID projectId) {
+        return repositories.branches(currentUser.require(), projectId);
+    }
+
+    @PatchMapping("/repository")
+    public BranchSelectionResponse selectBranch(
+            @PathVariable UUID projectId,
+            @Valid @RequestBody SelectBranchRequest request) {
+        return repositories.selectBranch(currentUser.require(), projectId, request.branch());
     }
 
     @GetMapping("/pulls")

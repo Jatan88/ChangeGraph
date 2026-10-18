@@ -20,6 +20,7 @@ public record ProjectResponse(
             String ownerName,
             String repositoryName,
             String defaultBranch,
+            String selectedBranch,
             String repositoryUrl,
             String visibility,
             Instant lastSyncedAt) {

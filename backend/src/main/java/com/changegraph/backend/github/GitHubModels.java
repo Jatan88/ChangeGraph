@@ -36,6 +36,19 @@ public final class GitHubModels {
             List<CommitFile> files) {
     }
 
-    public record PullRequest(int number, String title, String headSha, String baseSha, String htmlUrl) {
+    public record PullRequest(
+            int number,
+            String title,
+            String headSha,
+            String baseSha,
+            String htmlUrl,
+            String headRef,
+            String baseRef) {
+    }
+
+    public record BranchPage(java.util.List<String> names, boolean truncated) {
+    }
+
+    public record CreatedPullRequest(int number, String htmlUrl, String headRef, String baseRef) {
     }
 }

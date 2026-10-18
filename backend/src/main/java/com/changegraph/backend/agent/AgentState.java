@@ -20,6 +20,7 @@ public final class AgentState {
     private final int maxIterations;
     private final List<ToolObservation> observations = new ArrayList<>();
     private final Set<String> callKeys = new LinkedHashSet<>();
+    private String loadQuery;
 
     public AgentState(
             UUID projectId,
@@ -71,8 +72,16 @@ public final class AgentState {
         }
     }
 
+    public void recordLoad(String query) {
+        this.loadQuery = query;
+    }
+
+    public String loadQuery() {
+        return loadQuery;
+    }
+
     public void note(String tool, String summary) {
-        observations.add(new ToolObservation(tool, summary, Map.of(), List.of(), Map.of()));
+        observations.add(new ToolObservation(tool, summary, Map.of(), List.of(), Map.of(), null));
     }
 
     public boolean alreadyCalled(String callKey) {

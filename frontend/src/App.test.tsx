@@ -177,6 +177,77 @@ describe('project workflow', () => {
     expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument()
   })
 
+  it('lists saved analyses with status and opens an agent report', async () => {
+    const saved = {
+      id: 'analysis-1',
+      kind: 'AGENT',
+      status: 'DETERMINISTIC_FALLBACK',
+      commitSha: 'ff10519f8e897f45e18cda41d1d30d4fa9319ca3',
+      pullRequestNumber: null,
+      riskLevel: 'LOW',
+      riskScore: 0,
+      createdAt: '2026-10-17T16:00:00Z',
+      completedAt: '2026-10-17T16:00:01Z',
+    }
+    installFetch((url) => {
+      if (url.endsWith('/api/auth/me')) return json(200, user)
+      if (url.endsWith('/api/projects/project-1')) return json(200, project)
+      if (url.endsWith('/api/projects/project-1/commits')) return json(200, [])
+      if (url.endsWith('/api/projects/project-1/pulls')) return json(200, [])
+      if (url.includes('/api/projects/project-1/analysis?')) {
+        return json(200, { items: [saved], page: 0, size: 20, total: 1 })
+      }
+      if (url.endsWith('/api/projects/project-1/agent/investigations/analysis-1')) {
+        return json(200, {
+          commitSha: saved.commitSha,
+          pullRequestNumber: null,
+          summary: 'AI-assisted reasoning was unavailable, so this report uses deterministic graph analysis.',
+          riskLevel: 'LOW',
+          riskScore: 0,
+          riskScoreMax: 100,
+          riskScoreInterpretation: '0-24 is LOW.',
+          riskFactors: [],
+          changedComponents: [],
+          impactedComponents: [],
+          impactPaths: [],
+          recommendedTests: [],
+          relatedIncidents: [],
+          evidence: [],
+          uncertainties: [],
+          investigationSummary: [{
+            tool: 'get_commit_changes',
+            summary: 'Recorded 1 changed files and 0 changed functions from the commit graph.',
+            query: "MATCH (c:Commit {id: 'ff10519'}) RETURN c.id",
+          }],
+          agentStatus: 'DETERMINISTIC_FALLBACK',
+        })
+      }
+      return json(500, { code: 'UNEXPECTED', message: 'unexpected' })
+    })
+    renderApp('/projects/project-1/analysis')
+    const row = await screen.findByRole('button', { name: /Open agent analysis ff10519/ })
+    await userEvent.click(row)
+    expect(await screen.findByText(/The language model did not produce a plan/)).toBeInTheDocument()
+    expect(screen.getByText('No risk factors were recorded.')).toBeInTheDocument()
+    expect(screen.getAllByText('No records available.').length).toBeGreaterThan(0)
+    expect(screen.getByText('Changed components')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Investigation' })).toBeInTheDocument()
+    expect(screen.getByText("MATCH (c:Commit {id: 'ff10519'}) RETURN c.id")).toBeInTheDocument()
+  })
+
+  it('shows an empty message in the graph node table', async () => {
+    installFetch((url) => {
+      if (url.endsWith('/api/auth/me')) return json(200, user)
+      if (url.endsWith('/api/projects/project-1')) return json(200, project)
+      if (url.includes('/api/projects/project-1/graph')) {
+        return json(200, { nodes: [], edges: [], truncated: false })
+      }
+      return json(500, { code: 'UNEXPECTED', message: 'unexpected' })
+    })
+    renderApp('/projects/project-1/graph')
+    expect(await screen.findByText('No records available.')).toBeInTheDocument()
+  })
+
   it('explains that only public repositories can be connected', async () => {
     installFetch((url) => {
       if (url.endsWith('/api/auth/me')) return json(200, user)
@@ -258,9 +329,60 @@ describe('analysis results', () => {
     }
     render(<AgentReportView report={report} />)
     expect(screen.getByText('HYPOTHESIS')).toBeInTheDocument()
-    expect(screen.getByText('DETERMINISTIC_FALLBACK')).toBeInTheDocument()
+    expect(screen.getByText('DETERMINISTIC FALLBACK')).toBeInTheDocument()
     expect(screen.getByText('SYNTHETIC')).toBeInTheDocument()
     expect(screen.getByText(/Traced 1 potentially impacted function/)).toBeInTheDocument()
     expect(screen.getByText(/Inferred from a dependency/)).toBeInTheDocument()
+  })
+})
+
+describe('activity list', () => {
+  it('shows the graph mark and keeps status labels whole', async () => {
+    vi.stubGlobal('EventSource', class {
+      addEventListener() {}
+      close() {}
+    })
+    const summary = {
+      id: 'run-1',
+      eventType: 'PULL_REQUEST',
+      status: 'AWAITING_HUMAN_REVIEW',
+      commitSha: '3f85b7f',
+      pullRequestNumber: 4,
+      sourceBranch: 'changegraph/fix-3f85b7f-58985a18-a1',
+      targetBranch: 'main',
+      title: 'ChangeGraph review fixes for 3f85b7f',
+      currentTask: 'Completed',
+      fixBranch: null,
+      fixPullRequestUrl: null,
+      fixPullRequestNumber: null,
+      errorMessage: null,
+      createdAt: '2026-10-17T09:00:00Z',
+      startedAt: '2026-10-17T09:00:00Z',
+      completedAt: '2026-10-17T09:00:19Z',
+    }
+    const detail = {
+      ...summary,
+      defaultBranch: 'main',
+      selectedBranch: 'main',
+      developerNote: null,
+      validationNote: null,
+      attempt: 1,
+      events: [],
+      review: null,
+    }
+    installFetch((url) => {
+      if (url.endsWith('/api/auth/me')) return json(200, user)
+      if (url.endsWith('/api/projects')) return json(200, { items: [project], page: 0, size: 20, total: 1 })
+      if (url.endsWith('/api/projects/project-1')) return json(200, project)
+      if (url.endsWith('/api/projects/project-1/workflows')) return json(200, { items: [summary], page: 0, size: 20, total: 1 })
+      if (url.includes('/api/projects/project-1/workflows/run-1')) return json(200, detail)
+      return json(500, { code: 'UNEXPECTED', message: 'unexpected' })
+    })
+    renderApp('/projects/project-1/activity')
+    const row = await screen.findByRole('button', { name: /ChangeGraph review fixes for 3f85b7f/ })
+    expect(row).toHaveTextContent('AWAITING HUMAN REVIEW')
+    expect(row).toHaveTextContent('changegraph/fix-3f85b7f-58985a18-a1')
+    expect(screen.getByRole('link', { name: 'ChangeGraph' }).querySelector('svg.brand-mark')).not.toBeNull()
+    expect(screen.queryByRole('columnheader', { name: 'Status' })).not.toBeInTheDocument()
   })
 })

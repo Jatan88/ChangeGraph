@@ -47,6 +47,6 @@ public record AgentReport(
             String summary) {
     }
 
-    public record InvestigationStep(String tool, String summary) {
+    public record InvestigationStep(String tool, String summary, String query) {
     }
 }

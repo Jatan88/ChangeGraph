@@ -7,9 +7,6 @@ import java.util.TreeMap;
 public final class AgentPolicy {
 
     public void check(AgentState state, AgentTool tool, Map<String, String> arguments) {
-        if (state.toolCalls() >= state.maxToolCalls()) {
-            throw new AgentRejectedException("BUDGET", "The investigation tool budget is exhausted.");
-        }
         Map<String, String> safe = sanitize(tool, arguments);
         String key = callKey(tool.name(), safe);
         if (state.alreadyCalled(key)) {

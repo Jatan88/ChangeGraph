@@ -1,9 +1,10 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, ApiError } from '../api/client'
 import type {
   AgentReport,
   AnalysisReport,
+  AnalysisSummary,
   CommitDetail,
   CommitPoll,
   CommitSummary,
@@ -14,7 +15,10 @@ import type {
   PullRequest,
   RepositorySummary,
 } from '../api/types'
+import { BranchSelect } from '../components/BranchSelect'
 import { ErrorText, PublicRepoNotice, StatusBadge } from '../components/ui'
+import { normalizeGitHubRepoUrl } from '../githubUrl'
+import { nextSentence, projectProgress } from '../progress'
 
 export function useProject() {
   const { projectId = '' } = useParams()
@@ -62,29 +66,55 @@ export function ProjectOverviewPage() {
   if (error) return <ErrorText error={error} />
   if (!project) return <p className="muted">Loading project…</p>
 
+  const steps = projectProgress(project)
+  const done = steps.filter((step) => step.done).length
+  const current = steps.find((step) => !step.done)
+
   return (
     <section className="stack">
       <div className="row">
         <div>
-          <p className="kicker">Project</p>
+          <p className="kicker">What could break</p>
           <h1>{project.name}</h1>
+          <p>{project.description || 'No description'}</p>
+          <p className="muted">{nextSentence(current ?? steps[steps.length - 1])}</p>
         </div>
-        <StatusBadge value={project.graphStatus} />
       </div>
-      <p>{project.description || 'No description'}</p>
-      <PublicRepoNotice />
-      <article className="card">
-        <h2>Repository</h2>
-        {project.repository ? (
-          <p>
-            {project.repository.ownerName}/{project.repository.repositoryName} · {project.repository.defaultBranch} · verified {project.repository.visibility}
-          </p>
-        ) : (
-          <p>No public repository connected.</p>
-        )}
-        <p className="muted">Latest ingestion: {project.latestIngestion?.status ?? 'None'}</p>
-        <p className="muted">Latest analysis: {project.latestAnalysis?.status ?? 'None'}</p>
-      </article>
+      <p className="muted">{done} of {steps.length} complete</p>
+      <ol className="journey" aria-label="Path to an impact report">
+        {steps.map((step, index) => (
+          <li key={step.id} className={step.done ? 'is-done' : step === current ? 'is-current' : undefined}>
+            <Link to={step.to} aria-current={step === current ? 'step' : undefined}>
+              <span className="step-index">{index + 1}</span>
+              <strong>{step.label}</strong>
+              <span className="step-detail">{step.detail}</span>
+            </Link>
+          </li>
+        ))}
+      </ol>
+      {project.repository && (
+        <article className="card">
+          <h2>Repository</h2>
+          <dl className="repo-facts">
+            <div>
+              <dt>Repository</dt>
+              <dd>{project.repository.ownerName}/{project.repository.repositoryName}</dd>
+            </div>
+            <div>
+              <dt>Selected branch</dt>
+              <dd>{project.repository.selectedBranch}</dd>
+            </div>
+            <div>
+              <dt>Default branch</dt>
+              <dd>{project.repository.defaultBranch}</dd>
+            </div>
+            <div>
+              <dt>Visibility</dt>
+              <dd>{project.repository.visibility}</dd>
+            </div>
+          </dl>
+        </article>
+      )}
       <section className="card danger-zone">
         <h2>Delete project</h2>
         <p>Deletion removes this project’s database rows and its own FalkorDB graph. It does not delete any other project’s graph.</p>
@@ -179,11 +209,14 @@ export function ProjectSettingsPage() {
           <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={80} />
         </label>
         <label>
-          Description
+          Description, optional
           <textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} />
         </label>
         <button className="button" type="submit" disabled={pending}>Save</button>
       </form>
+      {project.repository && (
+        <BranchSelect projectId={projectId} repository={project.repository} />
+      )}
       {project.graphStatus !== 'READY' && (
         <button className="button secondary" type="button" onClick={retryGraph} disabled={pending}>
           Retry graph initialization
@@ -220,7 +253,8 @@ export function RepositoryPage() {
   async function connect(event: FormEvent) {
     event.preventDefault()
     setLocalError(null)
-    if (!/^https:\/\/github\.com\/[^/]+\/[^/]+\/?$/.test(url.replace(/\.git$/, ''))) {
+    const canonical = normalizeGitHubRepoUrl(url)
+    if (!canonical) {
       setLocalError('Use an https://github.com/owner/repository URL. The server still verifies that the repository is public.')
       return
     }
@@ -228,7 +262,7 @@ export function RepositoryPage() {
     try {
       setRepository(await api<RepositorySummary>(`/api/projects/${projectId}/repository`, {
         method: 'POST',
-        body: JSON.stringify({ repositoryUrl: url }),
+        body: JSON.stringify({ repositoryUrl: canonical }),
       }))
     } catch (err) {
       setLocalError(err instanceof ApiError ? err.message : 'Could not connect the repository.')
@@ -253,23 +287,52 @@ export function RepositoryPage() {
   return (
     <section className="stack">
       <h1>Connect repository</h1>
+      <p className="muted">Paste the repository. ChangeGraph checks that it is public before storing it.</p>
       <PublicRepoNotice />
       <ErrorText error={localError} />
       {repository ? (
         <article className="card">
           <h2>{repository.ownerName}/{repository.repositoryName}</h2>
-          <p>Default branch: {repository.defaultBranch}</p>
-          <p>Visibility verified by the server: {repository.visibility}</p>
-          <p>GitHub repository id: {repository.githubRepositoryId}</p>
+          <dl className="repo-facts">
+            <div>
+              <dt>Selected branch</dt>
+              <dd>{repository.selectedBranch}</dd>
+            </div>
+            <div>
+              <dt>Default branch</dt>
+              <dd>{repository.defaultBranch}</dd>
+            </div>
+            <div>
+              <dt>Visibility</dt>
+              <dd>{repository.visibility}</dd>
+            </div>
+            <div>
+              <dt>GitHub id</dt>
+              <dd>{repository.githubRepositoryId}</dd>
+            </div>
+          </dl>
+          <p className="hint">Later commits on the selected branch are reviewed. History already on the branch is left alone.</p>
+          <details className="quiet">
+            <summary>Webhook, when GitHub can reach this server</summary>
+            <p className="hint">Localhost cannot receive webhooks. On a public address, subscribe push and pull request events to POST /api/github/webhooks using GITHUB_WEBHOOK_SECRET.</p>
+          </details>
           <button className="button secondary" type="button" onClick={unlink} disabled={pending}>Remove repository</button>
         </article>
-      ) : (
+      ) : null}
+      {repository && (
+        <BranchSelect
+          projectId={projectId}
+          repository={repository}
+          onChange={setRepository}
+        />
+      )}
+      {!repository && (
         <form className="card form" onSubmit={connect}>
           <label>
             GitHub repository URL
             <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://github.com/owner/repository" required />
           </label>
-          <p className="hint">No access token is requested. Private, missing, and rate-limited repositories are rejected by the server.</p>
+          <p className="hint">github.com/owner/repository is enough. No access token is requested.</p>
           <button className="button" type="submit" disabled={pending}>{pending ? 'Checking…' : 'Connect public repository'}</button>
         </form>
       )}
@@ -306,49 +369,65 @@ export function GraphPage() {
   return (
     <section className="stack">
       <h1>Code graph</h1>
-      <p className="muted">Relationships shown here come from parsed source. Impact paths on the analysis page are inferences built from those relationships.</p>
-      <div className="filters">
-        {['', 'File', 'Function', 'Test', 'Service', 'Commit', 'Incident', 'Evidence'].map((item) => (
-          <button key={item || 'all'} type="button" className={type === item ? 'button' : 'button secondary'} onClick={() => setType(item)}>
-            {item || 'All'}
-          </button>
-        ))}
-      </div>
+      <p className="muted">These nodes are parsed from source. The analysis page infers impact from them.</p>
+      <label className="filter-select">
+        Node type
+        <select value={type} onChange={(event) => setType(event.target.value)}>
+          <option value="">All</option>
+          {['File', 'Function', 'Test', 'Service', 'Commit', 'Incident', 'Evidence'].map((item) => (
+            <option key={item} value={item}>{item}</option>
+          ))}
+        </select>
+      </label>
       <ErrorText error={localError} />
       {!view && !localError && <p className="muted">Loading graph…</p>}
       {view?.truncated && <p className="banner">The graph view is limited. It may not include every node.</p>}
       {view && view.nodes.length === 0 && <p>No graph nodes yet. Ingest a public commit first.</p>}
-      <div className="split">
+      <div className="graph-layout">
         <div className="graph-canvas">
-          {view?.nodes.slice(0, 40).map((node, index) => (
-            <button key={node.id} type="button" className="graph-node" style={{ left: `${(index % 4) * 24}%`, top: `${Math.floor(index / 4) * 72}px` }} onClick={() => setSelected(node.id)}>
+          {view?.nodes.slice(0, 40).map((node) => (
+            <button
+              key={node.id}
+              type="button"
+              className={node.id === selected ? 'graph-node is-selected' : 'graph-node'}
+              title={node.label}
+              aria-pressed={node.id === selected}
+              onClick={() => setSelected(node.id)}
+            >
               <span>{node.type}</span>
-              {node.label}
+              <strong>{node.label}</strong>
             </button>
           ))}
         </div>
-        <div className="card">
+        <aside className="card graph-inspector">
           <h2>Selected node</h2>
           {selectedNode ? (
             <>
-              <p>{selectedNode.label}</p>
+              <p className="graph-inspector-label" title={selectedNode.label}>{selectedNode.label}</p>
               <p className="muted">{selectedNode.type}</p>
-              <ul>
+              <dl className="graph-props">
                 {Object.entries(selectedNode.properties).map(([key, value]) => (
-                  <li key={key}>{key}: {String(value)}</li>
+                  <div key={key}>
+                    <dt>{key}</dt>
+                    <dd>{String(value)}</dd>
+                  </div>
                 ))}
-              </ul>
+              </dl>
               <h3>Connections</h3>
-              <ul>
+              {connections.length === 0 && <p className="muted">No connections in this view.</p>}
+              <ul className="graph-links">
                 {connections.map((edge, index) => (
-                  <li key={`${edge.type}-${index}`}>{edge.source} {edge.type} {edge.target}</li>
+                  <li key={`${edge.type}-${index}`} title={`${edge.source} ${edge.type} ${edge.target}`}>
+                    <span>{edge.type}</span>
+                    {edge.source === selected ? edge.target : edge.source}
+                  </li>
                 ))}
               </ul>
             </>
           ) : (
             <p>Select a node to inspect its stored properties.</p>
           )}
-        </div>
+        </aside>
       </div>
       <div className="table-wrap">
         <table>
@@ -357,11 +436,14 @@ export function GraphPage() {
             <tr><th>Type</th><th>Label</th><th>Id</th></tr>
           </thead>
           <tbody>
+            {view && view.nodes.length === 0 && (
+              <tr><td className="muted" colSpan={3}>No records available.</td></tr>
+            )}
             {view?.nodes.map((node) => (
               <tr key={node.id}>
                 <td>{node.type}</td>
-                <td><button type="button" className="linkish" onClick={() => setSelected(node.id)}>{node.label}</button></td>
-                <td className="mono">{node.id}</td>
+                <td className="clip" title={node.label}><button type="button" className="linkish" onClick={() => setSelected(node.id)}>{node.label}</button></td>
+                <td className="mono clip" title={node.id}>{node.id}</td>
               </tr>
             ))}
           </tbody>
@@ -486,28 +568,27 @@ export function IngestionPage() {
           <h1>Ingestion</h1>
           <p className="muted">
             {lastPolledAt
-              ? `Last GitHub poll ${new Date(lastPolledAt).toLocaleString()}. `
-              : 'GitHub has not been polled yet. '}
-            Automatic poll every {Math.max(1, Math.round(pollIntervalSeconds / 60))} minutes.
+              ? `Last GitHub check ${new Date(lastPolledAt).toLocaleString()}. `
+              : 'GitHub has not been checked yet. '}
+            Automatic check every {Math.max(1, Math.round(pollIntervalSeconds / 60))} minutes. Leave the commit empty to use the latest on the selected branch.
           </p>
         </div>
         <button className="button secondary" type="button" onClick={pollNow} disabled={polling}>
-          {polling ? 'Polling…' : 'Poll now'}
+          {polling ? 'Checking…' : 'Check GitHub'}
         </button>
       </div>
-      <PublicRepoNotice />
       <ErrorText error={localError} />
       <form className="card form" onSubmit={start}>
         <label>
           Commit SHA
-          <input value={sha} onChange={(event) => setSha(event.target.value)} placeholder="Leave empty to use the latest commit on the default branch" />
+          <input value={sha} onChange={(event) => setSha(event.target.value)} placeholder="Leave empty to use the latest commit on the selected branch" />
         </label>
         <button className="button" type="submit" disabled={pending || activeJob !== null}>
           {activeJob ? 'Ingestion running…' : 'Start ingestion'}
         </button>
       </form>
       <div className="table-wrap">
-        <table>
+        <table className="commits">
           <caption>Recent public commits</caption>
           <thead><tr><th>SHA</th><th>Message</th><th></th></tr></thead>
           <tbody>
@@ -559,19 +640,40 @@ export function AnalysisPage() {
   const [pulls, setPulls] = useState<PullRequest[]>([])
   const [report, setReport] = useState<AnalysisReport | null>(null)
   const [agentReport, setAgentReport] = useState<AgentReport | null>(null)
+  const [history, setHistory] = useState<AnalysisSummary[] | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const detailRef = useRef<HTMLDivElement>(null)
   const [localError, setLocalError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
+
+  function loadHistory() {
+    return api<Page<AnalysisSummary>>(`/api/projects/${projectId}/analysis?page=0&size=20`)
+      .then((page) => setHistory(page.items))
+  }
 
   useEffect(() => {
     let cancelled = false
     Promise.all([
       api<CommitSummary[]>(`/api/projects/${projectId}/commits`).catch(() => []),
       api<PullRequest[]>(`/api/projects/${projectId}/pulls`).catch(() => []),
-    ]).then(([commitList, pullList]) => {
-      if (!cancelled) {
-        setCommits(commitList)
-        setPulls(pullList)
-      }
+      api<Page<AnalysisSummary>>(`/api/projects/${projectId}/analysis?page=0&size=20`).catch(() => null),
+    ]).then(([commitList, pullList, saved]) => {
+      if (cancelled) return
+      const items = saved ? saved.items : []
+      setCommits(commitList)
+      setPulls(pullList)
+      setHistory(items)
+      const latest = items[0]
+      if (latest?.kind !== 'AGENT') return
+      api<AgentReport>(`/api/projects/${projectId}/agent/investigations/${latest.id}`)
+        .then((stored) => {
+          if (!cancelled) {
+            setSelectedId(latest.id)
+            setReport(null)
+            setAgentReport(stored)
+          }
+        })
+        .catch(() => undefined)
     })
     return () => {
       cancelled = true
@@ -587,10 +689,12 @@ export function AnalysisPage() {
     setPending(true)
     setLocalError(null)
     try {
+      setAgentReport(null)
       setReport(await api<AnalysisReport>(`/api/projects/${projectId}/analysis`, {
         method: 'POST',
         body: JSON.stringify(targetBody()),
       }))
+      await loadHistory()
     } catch (err) {
       setLocalError(err instanceof ApiError ? err.message : 'Analysis failed.')
     } finally {
@@ -602,10 +706,12 @@ export function AnalysisPage() {
     setPending(true)
     setLocalError(null)
     try {
+      setReport(null)
       setAgentReport(await api<AgentReport>(`/api/projects/${projectId}/agent/investigations`, {
         method: 'POST',
         body: JSON.stringify(targetBody()),
       }))
+      await loadHistory()
     } catch (err) {
       setLocalError(err instanceof ApiError ? err.message : 'The agent investigation failed.')
     } finally {
@@ -613,15 +719,54 @@ export function AnalysisPage() {
     }
   }
 
+  async function openSaved(item: AnalysisSummary) {
+    setPending(true)
+    setLocalError(null)
+    setSelectedId(item.id)
+    try {
+      if (item.kind === 'AGENT') {
+        setReport(null)
+        setAgentReport(await api<AgentReport>(`/api/projects/${projectId}/agent/investigations/${item.id}`))
+      } else {
+        setAgentReport(null)
+        setReport(await api<AnalysisReport>(`/api/projects/${projectId}/analysis/${item.id}`))
+      }
+    } catch (err) {
+      setLocalError(err instanceof ApiError ? err.message : 'Could not open this analysis.')
+    } finally {
+      setPending(false)
+    }
+  }
+
+  useEffect(() => {
+    if (report || agentReport) {
+      detailRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+    }
+  }, [report, agentReport])
+
+  function openSavedFromKey(event: KeyboardEvent<HTMLTableRowElement>, item: AnalysisSummary) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      void openSaved(item)
+    }
+  }
+
   if (error) return <ErrorText error={error} />
+  const reportView = (
+    <div ref={detailRef}>
+      {report && <AnalysisView report={report} />}
+      {agentReport && <AgentReportView report={agentReport} />}
+    </div>
+  )
   return (
     <section className="stack">
       <h1>Impact analysis</h1>
-      <p className="muted">Results describe potential impact from graph paths. They do not claim a function is broken.</p>
+      <p className="muted">Read the score, why it landed there, and which tests to run. The score says how far a change can reach. It does not claim a function is broken.</p>
       <ErrorText error={localError} />
+      {(report || agentReport) && reportView}
       <form className="card form" onSubmit={run}>
         <fieldset>
-          <legend>Target</legend>
+          <legend>Choose one target</legend>
           <label className="check"><input type="radio" checked={mode === 'commit'} onChange={() => setMode('commit')} /> Commit</label>
           <label className="check"><input type="radio" checked={mode === 'pull'} onChange={() => setMode('pull')} /> Pull request</label>
         </fieldset>
@@ -644,38 +789,119 @@ export function AnalysisPage() {
             </label>
             <select value={pull} onChange={(event) => setPull(event.target.value)} aria-label="Open pull requests">
               <option value="">Open public pull requests</option>
-              {pulls.map((item) => <option key={item.number} value={item.number}>#{item.number} {item.title}</option>)}
+              {pulls.map((item) => (
+                <option key={item.number} value={item.number}>
+                  #{item.number} {item.title}{item.headRef && item.baseRef ? ` (${item.headRef} → ${item.baseRef})` : ''}
+                </option>
+              ))}
             </select>
           </>
         )}
+        <p className="hint">Run analysis reads the graph. Investigate asks the agent to plan the same question, and falls back to the graph if the model cannot.</p>
         <div className="actions">
           <button className="button" type="submit" disabled={pending}>{pending ? 'Analyzing…' : 'Run analysis'}</button>
           <button className="button secondary" type="button" onClick={investigate} disabled={pending}>Investigate with agent</button>
         </div>
       </form>
-      {report && <AnalysisView report={report} />}
-      {agentReport && <AgentReportView report={agentReport} />}
+      <div className="table-wrap">
+        <table>
+          <caption>Saved analyses</caption>
+          <thead>
+            <tr><th>When</th><th>Kind</th><th>Commit</th><th>Risk</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            {history && history.length === 0 && (
+              <tr><td className="muted" colSpan={5}>No records available.</td></tr>
+            )}
+            {history?.map((item) => (
+              <tr
+                key={item.id}
+                className={item.id === selectedId ? 'is-selected' : undefined}
+                role="button"
+                tabIndex={0}
+                aria-label={`Open ${item.kind === 'AGENT' ? 'agent' : 'graph'} analysis ${item.commitSha?.slice(0, 7) ?? ''} ${item.status}`}
+                onClick={() => openSaved(item)}
+                onKeyDown={(event) => openSavedFromKey(event, item)}
+              >
+                <td>{new Date(item.createdAt).toLocaleString()}</td>
+                <td>{item.kind === 'AGENT' ? 'Agent' : 'Graph'}</td>
+                <td className="mono">{item.commitSha ? item.commitSha.slice(0, 7) : item.pullRequestNumber ? `#${item.pullRequestNumber}` : ''}</td>
+                <td>{item.riskLevel ?? ''}{item.riskScore != null ? ` ${item.riskScore}` : ''}</td>
+                <td><StatusBadge value={item.status} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!(report || agentReport) && reportView}
     </section>
   )
 }
 
+function agentStatusMeaning(status: string) {
+  if (status === 'COMPLETED') return 'The language model chose the investigation steps and finished. The score still comes from the graph rules.'
+  if (status === 'DETERMINISTIC_FALLBACK') return 'The language model did not produce a plan. The same graph tools ran in a fixed order, and the score comes from those rules.'
+  if (status === 'BUDGET_EXHAUSTED') return 'The language model was running, then stopped because the investigation reached its step limit. The report uses only the graph evidence collected before that stop.'
+  return 'This status describes how the investigation was produced.'
+}
+
+function scoreWidth(score: number, max: number) {
+  if (!Number.isFinite(score) || !Number.isFinite(max) || max <= 0) return 0
+  return Math.max(0, Math.min(100, (score / max) * 100))
+}
+
+function mergeClose(count: number) {
+  if (count === 0) return 'No test was linked to this change. Use the impact above as a place to look.'
+  if (count === 1) return 'Run the test above before you merge.'
+  return `Run the ${count} tests above before you merge.`
+}
+
+function TestCallout({ tests }: { tests: { name: string; reason: string }[] }) {
+  return (
+    <article className="card test-callout">
+      <h2>Tests to run</h2>
+      {tests.length === 0 && <p>No test was linked to this change.</p>}
+      {tests.length > 0 && (
+        <ul className="test-list">
+          {tests.map((test) => (
+            <li key={`${test.name}-${test.reason}`}>
+              <strong>{test.name}</strong>
+              <span>{test.reason}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </article>
+  )
+}
+
 export function AnalysisView({ report }: { report: AnalysisReport }) {
+  const tests = report.recommendedTests.map((test) => ({
+    name: `${test.direct ? 'Direct' : 'Additional'}: ${test.name}`,
+    reason: test.reason,
+  }))
   return (
     <section className="stack" aria-live="polite">
       <article className="card risk-plate">
         <p className="kicker">Risk</p>
+        <p className="risk-score">{report.riskScore}<span> / {report.riskScoreMax}</span></p>
         <h2><StatusBadge value={report.riskLevel} /></h2>
-        <p>Score {report.riskScore} / {report.riskScoreMax}</p>
+        <div className="score-meter" role="img" aria-label={`Risk score ${report.riskScore} of ${report.riskScoreMax}`}>
+          <span className={`tone-${report.riskLevel.toLowerCase()}`} style={{ width: `${scoreWidth(report.riskScore, report.riskScoreMax)}%` }} />
+        </div>
         <p className="muted">{report.riskScoreInterpretation}</p>
         <p className="mono">Commit {report.commitSha}</p>
         <ul>{report.riskReasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
       </article>
-      <DataTable title="Changed files" headers={['Path', 'Change']} rows={report.changedFiles.map((file) => [file.path, file.changeType])} />
-      <DataTable title="Changed functions" headers={['Signature', 'Change']} rows={report.changedFunctions.map((fn) => [fn.signature, fn.changeType])} />
-      <DataTable title="Potentially impacted functions" headers={['Signature', 'Direction', 'Depth']} rows={report.impactedFunctions.map((fn) => [fn.signature, fn.direction, String(fn.depth)])} />
-      <DataTable title="Potentially impacted services" headers={['Service']} rows={report.impactedServices.map((service) => [service])} />
-      <DataTable title="Graph paths" headers={['Explanation']} rows={report.paths.map((path) => [path.explanation])} />
-      <DataTable title="Recommended tests" headers={['Test', 'Why']} rows={report.recommendedTests.map((test) => [`${test.direct ? 'Direct' : 'Additional'}: ${test.name}`, test.reason])} />
+      <TestCallout tests={tests} />
+      <section className="stack">
+        <h2>What this change reaches</h2>
+        <DataTable title="Changed files" headers={['Path', 'Change']} rows={report.changedFiles.map((file) => [file.path, file.changeType])} />
+        <DataTable title="Changed functions" headers={['Signature', 'Change']} rows={report.changedFunctions.map((fn) => [fn.signature, fn.changeType])} />
+        <DataTable title="Potentially impacted functions" headers={['Signature', 'Direction', 'Depth']} rows={report.impactedFunctions.map((fn) => [fn.signature, fn.direction, String(fn.depth)])} />
+        <DataTable title="Potentially impacted services" headers={['Service']} rows={report.impactedServices.map((service) => [service])} />
+        <DataTable title="Graph paths" headers={['Explanation']} rows={report.paths.map((path) => [path.explanation])} />
+      </section>
       <article className="card">
         <h2>Related incidents</h2>
         {report.relatedIncidents.length === 0 && <p>No related historical incidents are linked to this change.</p>}
@@ -700,35 +926,56 @@ export function AnalysisView({ report }: { report: AnalysisReport }) {
         <h2>Uncertainties</h2>
         <ul>{report.uncertainties.map((item) => <li key={item}>{item}</li>)}</ul>
       </article>
+      <article className="card merge-close">
+        <h2>Before you merge</h2>
+        <p>{mergeClose(tests.length)}</p>
+      </article>
     </section>
   )
 }
 
 export function AgentReportView({ report }: { report: AgentReport }) {
+  const tests = report.recommendedTests.map((test) => ({
+    name: `${test.direct ? 'Direct' : 'Inferred'}: ${test.name}`,
+    reason: test.reason,
+  }))
   return (
     <section className="stack" aria-live="polite">
       <article className="card risk-plate">
         <p className="kicker">Agent</p>
-        <h2><StatusBadge value={report.riskLevel} /></h2>
-        <p><StatusBadge value={report.agentStatus} /></p>
-        <p>Score {report.riskScore} / {report.riskScoreMax}</p>
+        <p className="risk-score">{report.riskScore}<span> / {report.riskScoreMax}</span></p>
+        <div className="badge-row">
+          <StatusBadge value={report.riskLevel} />
+          <StatusBadge value={report.agentStatus} />
+        </div>
+        <p className="muted">{agentStatusMeaning(report.agentStatus)}</p>
+        <div className="score-meter" role="img" aria-label={`Risk score ${report.riskScore} of ${report.riskScoreMax}`}>
+          <span className={`tone-${report.riskLevel.toLowerCase()}`} style={{ width: `${scoreWidth(report.riskScore, report.riskScoreMax)}%` }} />
+        </div>
         <p className="muted">{report.riskScoreInterpretation}</p>
         <p>{report.summary}</p>
       </article>
+      <TestCallout tests={tests} />
       <article className="card">
         <h2>Risk factors</h2>
-        <ul>
-          {report.riskFactors.map((factor) => (
-            <li key={`${factor.kind}-${factor.statement}`}>
-              <StatusBadge value={factor.kind} /> {factor.statement}
-            </li>
-          ))}
-        </ul>
+        {report.riskFactors.length === 0 && <p className="muted">No risk factors were recorded.</p>}
+        {report.riskFactors.length > 0 && (
+          <ul className="factor-list">
+            {report.riskFactors.map((factor) => (
+              <li key={`${factor.kind}-${factor.statement}`}>
+                <StatusBadge value={factor.kind} />
+                <span>{factor.statement}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </article>
-      <DataTable title="Changed components" headers={['Name', 'Kind', 'Detail']} rows={report.changedComponents.map((item) => [item.name, item.kind, item.detail])} />
-      <DataTable title="Impacted components" headers={['Name', 'Direction', 'Detail']} rows={report.impactedComponents.map((item) => [item.name, item.kind, item.detail])} />
-      <DataTable title="Dependency paths" headers={['Path']} rows={report.impactPaths.map((path) => [path.explanation])} />
-      <DataTable title="Recommended tests" headers={['Test', 'Why']} rows={report.recommendedTests.map((test) => [`${test.direct ? 'Direct' : 'Inferred'}: ${test.name}`, test.reason])} />
+      <section className="stack">
+        <h2>What this change reaches</h2>
+        <DataTable title="Changed components" headers={['Name', 'Kind', 'Detail']} rows={report.changedComponents.map((item) => [item.name, item.kind, item.detail])} />
+        <DataTable title="Impacted components" headers={['Name', 'Direction', 'Detail']} rows={report.impactedComponents.map((item) => [item.name, item.kind, item.detail])} />
+        <DataTable title="Dependency paths" headers={['Path']} rows={report.impactPaths.map((path) => [path.explanation])} />
+      </section>
       <article className="card">
         <h2>Related incidents</h2>
         {report.relatedIncidents.length === 0 && <p>No related historical incidents are linked to this change.</p>}
@@ -741,27 +988,41 @@ export function AgentReportView({ report }: { report: AgentReport }) {
       </article>
       <article className="card">
         <h2>Evidence</h2>
-        {report.evidence.length === 0 && <p>No incident evidence was retrieved.</p>}
-        <ul>
-          {report.evidence.map((item) => (
-            <li key={item.id}>
-              {item.evidenceType} · {item.relationship} · {item.verificationStatus}
-              {item.synthetic ? ' · synthetic' : ''}: {item.summary}
-            </li>
-          ))}
-        </ul>
+        {report.evidence.length === 0 && <p className="muted">No incident evidence was retrieved.</p>}
+        {report.evidence.length > 0 && (
+          <ul>
+            {report.evidence.map((item) => (
+              <li key={item.id}>
+                {item.evidenceType} · {item.relationship} · {item.verificationStatus}
+                {item.synthetic ? ' · synthetic' : ''}: {item.summary}
+              </li>
+            ))}
+          </ul>
+        )}
       </article>
       <article className="card">
         <h2>Investigation</h2>
         <ol className="timeline">
           {report.investigationSummary.map((step, index) => (
-            <li key={`${step.tool}-${index}`}><strong>{step.tool}</strong> {step.summary}</li>
+            <li key={`${step.tool}-${index}`}>
+              <strong>{step.tool}</strong> {step.summary}
+              {step.query
+                ? <pre className="query">{step.query}</pre>
+                : <p className="muted">No FalkorDB query was stored for this step.</p>}
+            </li>
           ))}
         </ol>
       </article>
       <article className="card">
         <h2>Uncertainties</h2>
-        <ul>{report.uncertainties.map((item) => <li key={item}>{item}</li>)}</ul>
+        {report.uncertainties.length === 0 && <p className="muted">No uncertainties were recorded.</p>}
+        {report.uncertainties.length > 0 && (
+          <ul>{report.uncertainties.map((item) => <li key={item}>{item}</li>)}</ul>
+        )}
+      </article>
+      <article className="card merge-close">
+        <h2>Before you merge</h2>
+        <p>{mergeClose(tests.length)}</p>
       </article>
     </section>
   )
@@ -774,8 +1035,8 @@ function DataTable({ title, headers, rows }: { title: string; headers: string[];
         <caption>{title}</caption>
         <thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead>
         <tbody>
-          {rows.length === 0 && <tr><td colSpan={headers.length}>None recorded.</td></tr>}
-          {rows.map((row, index) => <tr key={`${title}-${index}`}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}
+          {rows.length === 0 && <tr><td className="muted" colSpan={headers.length}>No records available.</td></tr>}
+          {rows.map((row, index) => <tr key={`${title}-${index}`}>{row.map((cell, cellIndex) => <td key={cellIndex} title={cell}>{cell}</td>)}</tr>)}
         </tbody>
       </table>
     </div>

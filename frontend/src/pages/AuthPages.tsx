@@ -5,6 +5,21 @@ import type { CurrentUser } from '../api/types'
 import { useAuth } from '../auth/AuthProvider'
 import { AuthStage, ErrorText } from '../components/ui'
 
+function PasswordRules({ password }: { password: string }) {
+  const rules = [
+    { ok: password.length >= 10, label: 'At least 10 characters' },
+    { ok: /[A-Za-z]/.test(password), label: 'One letter' },
+    { ok: /\d/.test(password), label: 'One digit' },
+  ]
+  return (
+    <ul className="rule-list" aria-label="Password requirements">
+      {rules.map((rule) => (
+        <li key={rule.label} className={rule.ok ? 'is-met' : undefined}>{rule.label}</li>
+      ))}
+    </ul>
+  )
+}
+
 function EyeIcon({ off }: { off: boolean }) {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -177,7 +192,7 @@ export function RegisterPage() {
         onChange={setPassword}
         autoComplete="new-password"
       />
-      <p className="hint">At least 10 characters, including one letter and one digit.</p>
+      <PasswordRules password={password} />
       <PasswordField
         id="register-password-confirmation"
         label="Confirm password"

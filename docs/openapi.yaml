@@ -203,6 +203,9 @@ paths:
                 repositoryUrl:
                   type: string
                   example: https://github.com/owner/repository
+                branch:
+                  type: string
+                  description: Optional branch to select. Defaults to the repository default branch.
       responses:
         '201':
           description: Verified public repository
@@ -226,6 +229,22 @@ paths:
       responses:
         '204':
           description: Unlinked
+    patch:
+      summary: Change the selected branch
+      description: Validates the branch with GitHub, stores it, and queues a re-index of its latest commit. Graph entities are merged, not replaced.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [branch]
+              properties:
+                branch:
+                  type: string
+      responses:
+        '200':
+          description: Updated repository and optional workflow id
   /api/projects/{projectId}/commits:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -357,9 +376,169 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SyntheticSeed'
+  /api/projects/{projectId}/incidents:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      summary: Historical incidents stored on the project graph
+      responses:
+        '200':
+          description: Incidents owned by the signed-in user
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IncidentSummary'
+    post:
+      summary: Create an incident on the project graph
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIncident'
+      responses:
+        '201':
+          description: Created incident
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentDetail'
+  /api/projects/{projectId}/incidents/{incidentId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: incidentId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: One incident and its evidence
+      responses:
+        '200':
+          description: Incident detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentDetail'
+    patch:
+      summary: Update incident title, summary, or labels
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateIncident'
+      responses:
+        '200':
+          description: Updated incident
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentDetail'
+    delete:
+      summary: Delete an incident and its evidence nodes
+      responses:
+        '204':
+          description: Deleted
+  /api/projects/{projectId}/incidents/{incidentId}/evidence:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: incidentId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      summary: Attach evidence to an incident
+      description: |
+        Evidence links to an incident with relationship REPORTS_ON, SUPPORTS_CAUSE, SUPPORTS_RESOLUTION, or VALIDATES_FIX.
+        Set functionId to a parsed function id so impact analysis can relate the incident to a change.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEvidence'
+      responses:
+        '201':
+          description: Incident with the new evidence
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentDetail'
+  /api/projects/{projectId}/incidents/{incidentId}/evidence/{evidenceId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: incidentId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: evidenceId
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      summary: Update evidence fields or relationship
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEvidence'
+      responses:
+        '200':
+          description: Updated incident
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentDetail'
+    delete:
+      summary: Remove one evidence node from the graph
+      responses:
+        '200':
+          description: Incident after removal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentDetail'
   /api/projects/{projectId}/analysis:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
+    get:
+      summary: List stored graph analyses and agent investigations
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Newest runs first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AnalysisSummary'
+                  page:
+                    type: integer
+                  size:
+                    type: integer
+                  total:
+                    type: integer
     post:
       summary: Analyze a commit or pull request
       requestBody:
@@ -409,6 +588,24 @@ paths:
                 $ref: '#/components/schemas/AgentReport'
         '409':
           description: The graph or commit is not ready
+  /api/projects/{projectId}/agent/investigations/{analysisId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: analysisId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Read a stored agent investigation
+      responses:
+        '200':
+          description: Stored agent report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentReport'
   /api/projects/{projectId}/analysis/{analysisId}:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -427,6 +624,111 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AnalysisReport'
+  /api/github/webhooks:
+    post:
+      summary: GitHub webhook for push and pull request events
+      description: |
+        Unauthenticated except for the HMAC SHA-256 signature in X-Hub-Signature-256.
+        CSRF is not used. The body is the raw GitHub payload. Public repositories only.
+      parameters:
+        - name: X-GitHub-Event
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-GitHub-Delivery
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-Hub-Signature-256
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '202':
+          description: Accepted, ignored, or recognized as a duplicate
+        '401':
+          description: Signature did not match GITHUB_WEBHOOK_SECRET
+        '503':
+          description: Webhook secret is not configured
+  /api/projects/{projectId}/branches:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      summary: Branches on the linked public repository
+      responses:
+        '200':
+          description: Default branch, selected branch, and the returned branch names
+  /api/projects/{projectId}/workflows:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      summary: Workflow runs for commits, pull requests, and branch sync
+      responses:
+        '200':
+          description: Newest runs first
+  /api/projects/{projectId}/workflows/stream:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      summary: Server-sent events for workflow list changes
+      description: Emits workflow-project events when a run is created or its summary status changes. Scoped to the owned project.
+      responses:
+        '200':
+          description: text/event-stream
+  /api/projects/{projectId}/workflows/{runId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Workflow detail, persisted events, and review findings
+      responses:
+        '200':
+          description: Run owned by the signed-in user
+  /api/projects/{projectId}/workflows/{runId}/stream:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: after
+        in: query
+        schema:
+          type: integer
+          default: 0
+    get:
+      summary: Server-sent events for one workflow
+      description: Replays workflow events after the given sequence, then streams new ones. Also emits workflow-status when the run enters a new lifecycle state or finishes. Events are scoped to the owned project.
+      responses:
+        '200':
+          description: text/event-stream
+  /api/projects/{projectId}/workflows/{runId}/retry:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      summary: Run a workflow again
+      description: A failed run can be queued again. A completed review that did not open a fix pull request can also be queued again.
+      responses:
+        '200':
+          description: The same run id, queued again
+        '409':
+          description: The run cannot be queued again
   /api/graph/health:
     get:
       summary: FalkorDB connectivity check for the shared health graph
@@ -577,6 +879,9 @@ components:
           type: string
         defaultBranch:
           type: string
+        selectedBranch:
+          type: string
+          description: Branch used for sync and commit tracking. Equals the repository default until a branch is chosen.
         repositoryUrl:
           type: string
         visibility:
@@ -600,7 +905,7 @@ components:
         pollIntervalSeconds:
           type: integer
           format: int64
-          description: Automatic poll interval from changegraph.github.poll-interval-minutes.
+          description: Automatic poll interval. One minute when webhooks cannot be delivered, otherwise changegraph.github.poll-interval-minutes.
     CommitSummary:
       type: object
       properties:
@@ -652,6 +957,12 @@ components:
           type: string
         htmlUrl:
           type: string
+        headRef:
+          type: string
+          description: Source branch of the pull request.
+        baseRef:
+          type: string
+          description: Target branch of the pull request. This is not assumed to be main.
     IngestionJob:
       type: object
       properties:
@@ -724,6 +1035,172 @@ components:
           type: array
           items:
             type: string
+    IncidentSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        summary:
+          type: string
+        sourceType:
+          type: string
+        synthetic:
+          type: boolean
+        evidenceCount:
+          type: integer
+        updatedAt:
+          type: string
+          format: date-time
+    IncidentDetail:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        summary:
+          type: string
+        sourceType:
+          type: string
+        synthetic:
+          type: boolean
+        evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/IncidentEvidence'
+        updatedAt:
+          type: string
+          format: date-time
+    IncidentEvidence:
+      type: object
+      properties:
+        id:
+          type: string
+        evidenceType:
+          type: string
+          enum: [INCIDENT_REPORT, HUMAN_REVIEWED_FINDING, FIX_COMMIT, REGRESSION_TEST]
+        relationship:
+          type: string
+          enum: [REPORTS_ON, SUPPORTS_CAUSE, SUPPORTS_RESOLUTION, VALIDATES_FIX]
+        verificationStatus:
+          type: string
+          enum: [VERIFIED, UNREVIEWED, DISPUTED]
+        confidence:
+          type: string
+          enum: [LOW, MEDIUM, HIGH]
+        summary:
+          type: string
+        sourceType:
+          type: string
+        synthetic:
+          type: boolean
+        functionId:
+          type: string
+    CreateIncident:
+      type: object
+      required: [title, summary]
+      properties:
+        id:
+          type: string
+          description: Optional stable id. Generated when omitted.
+        title:
+          type: string
+        summary:
+          type: string
+        sourceType:
+          type: string
+          default: MANUAL
+        synthetic:
+          type: boolean
+          default: false
+    UpdateIncident:
+      type: object
+      properties:
+        title:
+          type: string
+        summary:
+          type: string
+        sourceType:
+          type: string
+        synthetic:
+          type: boolean
+    CreateEvidence:
+      type: object
+      required: [evidenceType, relationship, verificationStatus, confidence, summary]
+      properties:
+        id:
+          type: string
+        evidenceType:
+          type: string
+        relationship:
+          type: string
+        verificationStatus:
+          type: string
+        confidence:
+          type: string
+        summary:
+          type: string
+        functionId:
+          type: string
+          description: Parsed function id from the project graph
+        sourceType:
+          type: string
+          default: MANUAL
+        synthetic:
+          type: boolean
+          default: false
+    UpdateEvidence:
+      type: object
+      properties:
+        evidenceType:
+          type: string
+        relationship:
+          type: string
+        verificationStatus:
+          type: string
+        confidence:
+          type: string
+        summary:
+          type: string
+        functionId:
+          type: string
+        sourceType:
+          type: string
+        synthetic:
+          type: boolean
+    AnalysisSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [GRAPH, AGENT]
+        status:
+          type: string
+          enum: [COMPLETED, DETERMINISTIC_FALLBACK, BUDGET_EXHAUSTED, FAILED]
+        commitSha:
+          type: string
+          nullable: true
+        pullRequestNumber:
+          type: integer
+          nullable: true
+        riskLevel:
+          type: string
+          nullable: true
+        riskScore:
+          type: integer
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
     AgentReport:
       type: object
       properties:
@@ -769,6 +1246,9 @@ components:
                 type: string
               summary:
                 type: string
+              query:
+                type: string
+                description: FalkorDB read used for this investigation step.
     AnalysisReport:
       type: object
       properties:

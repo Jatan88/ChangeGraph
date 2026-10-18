@@ -3,6 +3,8 @@ import { Link, useNavigate } from 'react-router-dom'
 import { api, ApiError } from '../api/client'
 import type { Page, Project, RepositorySummary } from '../api/types'
 import { EmptyState, ErrorText, PublicRepoNotice, StatusBadge } from '../components/ui'
+import { normalizeGitHubRepoUrl } from '../githubUrl'
+import { nextStep } from '../progress'
 
 export function DashboardPage() {
   const [projects, setProjects] = useState<Project[] | null>(null)
@@ -26,9 +28,9 @@ export function DashboardPage() {
     <section className="stack">
       <div className="row">
         <div>
-          <p className="kicker">Owned graphs</p>
+          <p className="kicker">Before you merge</p>
           <h1>Projects</h1>
-          <p className="muted">Each project has its own graph. You only see projects you own.</p>
+          <p className="muted">Each project answers what a public change could break, why, and which tests to run.</p>
         </div>
         <Link className="button" to="/projects/new">
           New project
@@ -39,36 +41,33 @@ export function DashboardPage() {
       {projects?.length === 0 && (
         <EmptyState
           title="No projects yet"
-          body="Create a project, connect a public GitHub repository, ingest a commit, and review the impact report."
+          body="Start with a name and a public GitHub repository. ChangeGraph fetches it and opens ingestion."
+          action={{ to: '/projects/new', label: 'New project' }}
         />
       )}
       <div className="ledger">
-        {projects?.map((project, index) => (
-          <Link key={project.id} className="ledger-row project-card" to={`/projects/${project.id}`}>
-            <span className="index">{String(index + 1).padStart(2, '0')}</span>
-            <div>
-              <h2>{project.name}</h2>
-              <p>{project.description || 'No description'}</p>
-            </div>
-            <div className="ledger-meta">
-              <StatusBadge value={project.graphStatus} />
-              <p className="muted">
-                {project.repositoryConnected
-                  ? `${project.repository?.ownerName}/${project.repository?.repositoryName}`
-                  : 'No repository connected'}
-              </p>
-              <p className="muted">Ingestion: {project.latestIngestion?.status ?? 'None'}</p>
-              <p className="muted">Latest analysis: {project.latestAnalysis?.status ?? 'None'}</p>
-            </div>
-          </Link>
-        ))}
+        {projects?.map((project, index) => {
+          const step = nextStep(project)
+          return (
+            <Link key={project.id} className="ledger-row project-card" to={`/projects/${project.id}`}>
+              <span className="index">{String(index + 1).padStart(2, '0')}</span>
+              <div>
+                <h2>{project.name}</h2>
+                <p>{project.description || 'No description'}</p>
+              </div>
+              <div className="ledger-meta">
+                <StatusBadge value={project.graphStatus} />
+                <p className="signal-line">
+                  <span>{step.done ? 'Impact' : 'Next'}</span>
+                  {step.done ? 'Report ready' : step.label}
+                </p>
+              </div>
+            </Link>
+          )
+        })}
       </div>
     </section>
   )
-}
-
-function isPublicGitHubRepoUrl(value: string) {
-  return /^https:\/\/github\.com\/[^/]+\/[^/]+\/?$/.test(value.trim().replace(/\.git$/, ''))
 }
 
 export function NewProjectPage() {
@@ -82,8 +81,8 @@ export function NewProjectPage() {
   async function onSubmit(event: FormEvent) {
     event.preventDefault()
     setError(null)
-    const url = repositoryUrl.trim()
-    if (!isPublicGitHubRepoUrl(url)) {
+    const url = normalizeGitHubRepoUrl(repositoryUrl)
+    if (!url) {
       setError('Use an https://github.com/owner/repository URL. Only public repositories can be fetched.')
       return
     }
@@ -118,7 +117,7 @@ export function NewProjectPage() {
   return (
     <form className="card form" onSubmit={onSubmit}>
       <h1>New project</h1>
-      <p className="muted">Add a public GitHub repository. ChangeGraph fetches it from GitHub and checks that it is public before anything is stored.</p>
+      <p className="muted">Name it, paste the repository, and ChangeGraph fetches the latest commit.</p>
       <PublicRepoNotice />
       <ErrorText error={error} />
       <label>
@@ -126,7 +125,7 @@ export function NewProjectPage() {
         <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={80} />
       </label>
       <label>
-        Description
+        Description, optional
         <textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={500} />
       </label>
       <label>
@@ -140,7 +139,7 @@ export function NewProjectPage() {
           required
         />
       </label>
-      <p className="hint">No access token is requested. Private, missing, and rate-limited repositories are rejected by the server.</p>
+      <p className="hint">github.com/owner/repository is enough. No access token is requested. Private repositories are rejected by the server.</p>
       <button className="button" type="submit" disabled={pending}>
         {pending ? 'Fetching repository…' : 'Create and fetch'}
       </button>

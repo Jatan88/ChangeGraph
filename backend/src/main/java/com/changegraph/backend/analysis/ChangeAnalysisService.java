@@ -1,6 +1,8 @@
 package com.changegraph.backend.analysis;
 
+import com.changegraph.backend.agent.AgentReport;
 import com.changegraph.backend.common.ApiException;
+import com.changegraph.backend.common.PageResponse;
 import com.changegraph.backend.github.GitHubClient;
 import com.changegraph.backend.github.GitHubModels;
 import com.changegraph.backend.graph.CodeGraph;
@@ -13,6 +15,8 @@ import com.changegraph.backend.project.ProjectGraph;
 import com.changegraph.backend.project.ProjectRepositoryLink;
 import com.changegraph.backend.user.UserAccount;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -104,13 +108,43 @@ public class ChangeAnalysisService {
     }
 
     @Transactional(readOnly = true)
+    public PageResponse<AnalysisSummary> list(UserAccount owner, UUID projectId, int page, int size) {
+        access.requireProject(owner, projectId);
+        int bounded = Math.max(1, Math.min(size, 50));
+        int safePage = Math.max(0, page);
+        var result = analyses.findByProjectId(projectId, PageRequest.of(safePage, bounded, Sort.by(Sort.Direction.DESC, "createdAt")));
+        return new PageResponse<>(
+                result.getContent().stream().map(AnalysisSummary::from).toList(),
+                safePage,
+                bounded,
+                result.getTotalElements());
+    }
+
+    @Transactional(readOnly = true)
     public AnalysisReport get(UserAccount owner, UUID projectId, UUID analysisId) {
+        AnalysisRecord record = require(owner, projectId, analysisId);
+        if ("AGENT".equals(record.getKind())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Analysis not found.");
+        }
+        return jsonMapper.readValue(record.getResultJson(), AnalysisReport.class);
+    }
+
+    @Transactional(readOnly = true)
+    public AgentReport getAgent(UserAccount owner, UUID projectId, UUID analysisId) {
+        AnalysisRecord record = require(owner, projectId, analysisId);
+        if (!"AGENT".equals(record.getKind())) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Analysis not found.");
+        }
+        return jsonMapper.readValue(record.getResultJson(), AgentReport.class);
+    }
+
+    private AnalysisRecord require(UserAccount owner, UUID projectId, UUID analysisId) {
         access.requireProject(owner, projectId);
         AnalysisRecord record = analyses.findByIdAndProjectId(analysisId, projectId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Analysis not found."));
         if (record.getResultJson() == null) {
             throw new ApiException(HttpStatus.CONFLICT, "ANALYSIS_UNAVAILABLE", "This analysis does not have a stored report.");
         }
-        return jsonMapper.readValue(record.getResultJson(), AnalysisReport.class);
+        return record;
     }
 }

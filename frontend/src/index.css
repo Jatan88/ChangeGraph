@@ -1,21 +1,82 @@
-:root {
-  --ink: #1c1915;
-  --paper: #f4efe4;
-  --paper-2: #efe6d4;
-  --text: #5c564c;
-  --text-h: #1c1915;
-  --bg: #efe8d8;
-  --border: #1c1915;
-  --social-bg: #f7f3ea;
-  --accent: #ff4d00;
-  --moss: #1f6b4a;
-  --shadow: 4px 4px 0 var(--ink);
-  --display: "Fraunces", "Iowan Old Style", Palatino, serif;
-  --sans: "IBM Plex Mono", ui-monospace, Consolas, monospace;
-  --heading: var(--display);
-  --mono: var(--sans);
+:root,
+html[data-theme='light'] {
+  --ink: #1a1d23;
+  --paper: #f3f4f6;
+  --paper-2: #e6e8ed;
+  --field: #e8eaee;
+  --text: #4b5160;
+  --text-h: #1a1d23;
+  --muted: #5f6673;
+  --nav: #3e4451;
+  --bg: #e4e7ec;
+  --spine: #eceef2;
+  --hover: #e0e3e8;
+  --active: #f7f8fa;
+  --border: #cfd3db;
+  --social-bg: #f3f4f6;
+  --accent: #1d4ed8;
+  --moss: #0f7a3a;
+  --danger: #b42318;
+  --danger-border: #e7c4bf;
+  --danger-bg: #f6ebe9;
+  --warning: #8a5a00;
+  --warning-bg: #f8f1e3;
+  --warning-border: #ead7a8;
+  --info: #1d4ed8;
+  --info-bg: #e8eefc;
+  --info-border: #c9d7f8;
+  --ok: #0f7a3a;
+  --ok-bg: #e7f6ee;
+  --ok-border: #b7e0c8;
+  --button: #1e232b;
+  --button-text: #f4f5f7;
+  --shadow: 0 1px 2px rgba(20, 24, 32, 0.06);
   color-scheme: light;
-  font: 15px/1.55 var(--sans);
+}
+
+html[data-theme='dark'] {
+  --ink: #eceef2;
+  --paper: #1b1e24;
+  --paper-2: #242830;
+  --field: #14171c;
+  --text: #b4bac6;
+  --text-h: #eceef2;
+  --muted: #8b93a1;
+  --nav: #c5cad3;
+  --bg: #121418;
+  --spine: #16191e;
+  --hover: #262a32;
+  --active: #2a2f38;
+  --border: #2e333c;
+  --social-bg: #1b1e24;
+  --accent: #8eb4ff;
+  --moss: #7dcaa0;
+  --danger: #f0a8a0;
+  --danger-border: #6b3030;
+  --danger-bg: #2a1818;
+  --warning: #e6c27a;
+  --warning-bg: #2a2418;
+  --warning-border: #5c4a28;
+  --info: #8eb4ff;
+  --info-bg: #182033;
+  --info-border: #2c406e;
+  --ok: #7dcaa0;
+  --ok-bg: #15261c;
+  --ok-border: #245c3a;
+  --button: #e8eaee;
+  --button-text: #14171c;
+  --shadow: none;
+  color-scheme: dark;
+}
+
+:root {
+  --display: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --heading: var(--sans);
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font: 14px/1.5 var(--sans);
+  font-feature-settings: "liga" 1, "calt" 1;
+  font-variant-numeric: tabular-nums;
   color: var(--text);
   background: var(--bg);
   font-synthesis: none;
@@ -23,41 +84,11 @@
   -webkit-font-smoothing: antialiased;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ink: #f4efe4;
-    --paper: #171512;
-    --paper-2: #221f1b;
-    --text: #b7aea2;
-    --text-h: #f6f1e7;
-    --bg: #100e0c;
-    --border: #f4efe4;
-    --social-bg: #1c1915;
-    --accent: #ff6a2a;
-    --moss: #8dcea8;
-    --shadow: 4px 4px 0 #f4efe4;
-    color-scheme: dark;
-  }
-}
-
 body {
   margin: 0;
   min-height: 100svh;
-  background:
-    radial-gradient(900px 420px at 0% 0%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 60%),
-    var(--bg);
-}
-
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    linear-gradient(color-mix(in srgb, var(--ink) 7%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--ink) 7%, transparent) 1px, transparent 1px);
-  background-size: 32px 32px;
-  mask-image: linear-gradient(to bottom, #000 0%, transparent 78%);
+  background: var(--bg);
+  color: var(--text);
 }
 
 #root {
@@ -66,17 +97,19 @@ body::before {
 }
 
 h1, h2, h3 {
-  font-family: var(--display);
-  font-weight: 560;
+  font-family: var(--sans);
+  font-weight: 600;
+  font-style: normal;
   color: var(--text-h);
-  letter-spacing: -0.03em;
+  letter-spacing: -0.011em;
+  text-wrap: balance;
   margin: 0;
 }
 
-h1 { font-size: clamp(40px, 6vw, 68px); line-height: 0.92; font-style: italic; }
-h2 { font-size: 28px; line-height: 1.05; }
-h3 { font-size: 22px; }
+h1 { font-size: 28px; line-height: 1.2; }
+h2 { font-size: 16px; line-height: 1.35; letter-spacing: -0.006em; }
+h3 { font-size: 14px; line-height: 1.4; letter-spacing: 0; }
 
 p { margin: 0; }
 
-a { color: var(--text-h); }
+a { color: var(--accent); }

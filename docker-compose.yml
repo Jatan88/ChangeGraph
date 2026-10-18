@@ -1,0 +1,84 @@
+# Full ChangeGraph stack on one origin: UI, API, PostgreSQL, and FalkorDB.
+# From the repo root, after copying .env.example to .env:
+#   docker compose up --build
+# The UI is at http://localhost:8080. The API is only reached through that origin.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: changegraph
+      POSTGRES_USER: ${POSTGRES_USER:-changegraph}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d changegraph"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  falkordb:
+    image: falkordb/falkordb:latest
+    volumes:
+      - falkordb-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      POSTGRES_URL: jdbc:postgresql://postgres:5432/changegraph
+      POSTGRES_USER: ${POSTGRES_USER:-changegraph}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: "6379"
+      FLYWAY_ENABLED: "true"
+      SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      FRONTEND_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      CHANGEGRAPH_LLM_BASE_URL: ${CHANGEGRAPH_LLM_BASE_URL:-https://api.openai.com/v1}
+      CHANGEGRAPH_LLM_API_KEY: ${CHANGEGRAPH_LLM_API_KEY:-}
+      CHANGEGRAPH_LLM_MODEL: ${CHANGEGRAPH_LLM_MODEL:-gpt-4o-mini}
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=75.0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      falkordb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:1213/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  falkordb-data:

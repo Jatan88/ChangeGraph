@@ -8,5 +8,6 @@ public record ToolObservation(
         String summary,
         Map<String, String> arguments,
         List<String> evidenceIds,
-        Map<String, Object> facts) {
+        Map<String, Object> facts,
+        String query) {
 }

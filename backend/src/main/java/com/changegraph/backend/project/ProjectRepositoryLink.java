@@ -34,11 +34,17 @@ public class ProjectRepositoryLink {
     @Column(name = "default_branch", nullable = false, length = 255)
     private String defaultBranch;
 
+    @Column(name = "selected_branch", length = 255)
+    private String selectedBranch;
+
     @Column(name = "repository_url", nullable = false, length = 300)
     private String repositoryUrl;
 
     @Column(name = "last_synced_at")
     private Instant lastSyncedAt;
+
+    @Column(name = "last_seen_commit_sha", length = 40)
+    private String lastSeenCommitSha;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
@@ -105,6 +111,21 @@ public class ProjectRepositoryLink {
         this.defaultBranch = defaultBranch;
     }
 
+    public String getSelectedBranch() {
+        return selectedBranch;
+    }
+
+    public void setSelectedBranch(String selectedBranch) {
+        this.selectedBranch = selectedBranch;
+    }
+
+    public String branchForSync() {
+        if (selectedBranch != null && !selectedBranch.isBlank()) {
+            return selectedBranch;
+        }
+        return defaultBranch;
+    }
+
     public String getRepositoryUrl() {
         return repositoryUrl;
     }
@@ -119,6 +140,14 @@ public class ProjectRepositoryLink {
 
     public void setLastSyncedAt(Instant lastSyncedAt) {
         this.lastSyncedAt = lastSyncedAt;
+    }
+
+    public String getLastSeenCommitSha() {
+        return lastSeenCommitSha;
+    }
+
+    public void setLastSeenCommitSha(String lastSeenCommitSha) {
+        this.lastSeenCommitSha = lastSeenCommitSha;
     }
 
     public Instant getCreatedAt() {

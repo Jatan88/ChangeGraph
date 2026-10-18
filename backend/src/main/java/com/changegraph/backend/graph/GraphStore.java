@@ -11,4 +11,12 @@ public interface GraphStore {
     void merge(UUID projectId, String graphName, CodeGraph graph);
 
     CodeGraph load(UUID projectId, String graphName, int limit);
+
+    void deleteNode(UUID projectId, String graphName, NodeType type, String id);
+
+    void deleteEdge(UUID projectId, String graphName, EdgeType type, String sourceId, String targetId);
+
+    default String loadScript(String graphName, int limit) {
+        return "";
+    }
 }

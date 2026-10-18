@@ -46,7 +46,8 @@ public class IngestionJobService {
                 link.getGithubRepositoryId(),
                 link.getOwnerName(),
                 link.getRepositoryName(),
-                job.getRequestedCommitSha());
+                job.getRequestedCommitSha(),
+                link.branchForSync());
     }
 
     @Transactional
@@ -64,6 +65,11 @@ public class IngestionJobService {
         if (complete) {
             job.setCompletedAt(Instant.now());
         }
+    }
+
+    @Transactional(readOnly = true)
+    public IngestionJobResponse view(UUID jobId) {
+        return jobs.findById(jobId).map(IngestionJobResponse::from).orElse(null);
     }
 
     @Transactional

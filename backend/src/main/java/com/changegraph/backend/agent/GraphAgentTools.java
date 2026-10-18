@@ -55,7 +55,7 @@ public final class GraphAgentTools {
                 ids.add(function.getId());
             }
             String message = state.graph().node(state.commitSha()).map(node -> Text.clamp(node.property("message"), 180)).orElse("");
-            return observation("get_commit_changes",
+            return observation(state, "get_commit_changes",
                     "Recorded " + files.size() + " changed files and " + functions.size() + " changed functions from the commit graph.",
                     args, ids, Map.of("files", files, "functions", functions, "commitMessage", message, "ids", ids));
         });
@@ -67,7 +67,7 @@ public final class GraphAgentTools {
                 Set.of("functionId", "direction", "depth"), (state, args) -> {
                     List<String> seeds = seeds(state, args.get("functionId"));
                     if (seeds.isEmpty()) {
-                        return observation("trace_function_dependencies",
+                        return observation(state, "trace_function_dependencies",
                                 "No changed function was available to trace.", args, List.of(), Map.of("hits", List.of(), "paths", List.of(), "ids", List.of()));
                     }
                     String direction = args.getOrDefault("direction", "both");
@@ -99,7 +99,7 @@ public final class GraphAgentTools {
                         ids.add(step.fromId());
                         ids.add(step.toId());
                     }
-                    return observation("trace_function_dependencies",
+                    return observation(state, "trace_function_dependencies",
                             "Traced " + hits.size() + " potentially impacted functions. "
                                     + (result.truncated() ? "The traversal stopped at its node limit." : "The traversal stayed inside the configured depth."),
                             args, ids, Map.of("hits", hits, "paths", paths, "truncated", result.truncated(), "ids", ids));
@@ -136,7 +136,7 @@ public final class GraphAgentTools {
                         ids.add(test.getId());
                         ids.add(edge.getTargetId());
                     }
-                    return observation("find_related_tests",
+                    return observation(state, "find_related_tests",
                             "Found " + tests.size() + " tests connected to the investigated functions.",
                             args, ids, Map.of("tests", tests, "ids", ids));
                 });
@@ -156,7 +156,7 @@ public final class GraphAgentTools {
                             ids.add(String.valueOf(item.get("id")));
                         }
                     }
-                    return observation("search_historical_incidents",
+                    return observation(state, "search_historical_incidents",
                             incidents.isEmpty()
                                     ? "No stored incident is linked to the investigated functions."
                                     : "Found " + incidents.size() + " linked incidents. Synthetic incidents stay labeled synthetic.",
@@ -199,7 +199,7 @@ public final class GraphAgentTools {
                         ids.add(edge.getSourceId());
                         ids.add(edge.getTargetId());
                     }
-                    return observation("inspect_service_dependencies",
+                    return observation(state, "inspect_service_dependencies",
                             "Found " + services.size() + " related services and " + dependencies.size() + " recorded service dependencies.",
                             args, ids, Map.of("services", services, "dependencies", dependencies, "ids", ids));
                 });
@@ -212,7 +212,7 @@ public final class GraphAgentTools {
                     String incidentId = args.getOrDefault("incidentId", "");
                     GraphNode incident = state.graph().node(incidentId).filter(node -> node.getType() == NodeType.INCIDENT).orElse(null);
                     if (incident == null) {
-                        return observation("inspect_evidence",
+                        return observation(state, "inspect_evidence",
                                 "No incident with that id exists in this project graph.",
                                 args, List.of(), Map.of("found", false, "evidence", List.of(), "ids", List.of()));
                     }
@@ -222,7 +222,7 @@ public final class GraphAgentTools {
                     for (Map<String, Object> item : evidence) {
                         ids.add(String.valueOf(item.get("id")));
                     }
-                    return observation("inspect_evidence",
+                    return observation(state, "inspect_evidence",
                             "Retrieved " + evidence.size() + " evidence records for incident " + incidentId + ".",
                             args, ids, Map.of("found", true, "incidentId", incidentId, "evidence", evidence, "ids", ids));
                 });
@@ -235,7 +235,7 @@ public final class GraphAgentTools {
                     String functionId = args.getOrDefault("functionId", "");
                     GraphNode function = state.graph().node(functionId).filter(node -> node.getType() == NodeType.FUNCTION).orElse(null);
                     if (function == null) {
-                        return observation("get_function_details",
+                        return observation(state, "get_function_details",
                                 "No function with that id exists in this project graph.",
                                 args, List.of(), Map.of("found", false, "ids", List.of()));
                     }
@@ -254,7 +254,7 @@ public final class GraphAgentTools {
                     facts.put("callers", callers);
                     facts.put("callees", callees);
                     facts.put("ids", ids);
-                    return observation("get_function_details",
+                    return observation(state, "get_function_details",
                             "Loaded " + facts.get("name") + " with " + callers.size() + " callers and " + callees.size() + " callees.",
                             args, ids, facts);
                 });
@@ -418,12 +418,105 @@ public final class GraphAgentTools {
     }
 
     private static ToolObservation observation(
+            AgentState state,
             String tool,
             String summary,
             Map<String, String> arguments,
             List<String> evidenceIds,
             Map<String, Object> facts) {
-        return new ToolObservation(tool, summary, arguments, List.copyOf(new LinkedHashSet<>(evidenceIds)), facts);
+        return new ToolObservation(
+                tool,
+                summary,
+                arguments,
+                List.copyOf(new LinkedHashSet<>(evidenceIds)),
+                facts,
+                graphQuery(state, tool, arguments));
+    }
+
+    private static String graphQuery(AgentState state, String tool, Map<String, String> arguments) {
+        String sha = quote(state.commitSha());
+        return switch (tool) {
+            case "get_commit_changes" -> """
+                    MATCH (c:Commit {id: %s})
+                    OPTIONAL MATCH (c)-[fileEdge:CHANGES_FILE]->(file:File)
+                    OPTIONAL MATCH (c)-[fnEdge:CHANGES_FUNCTION]->(fn:Function)
+                    RETURN c.id, c.message, file.id, fileEdge.changeType, fn.id, fn.signature, fnEdge.changeType""".formatted(sha);
+            case "trace_function_dependencies" -> traceQuery(state, arguments);
+            case "find_related_tests" -> """
+                    MATCH (test:Test)-[:TESTS]->(fn:Function)
+                    WHERE fn.id IN %s
+                    RETURN test.id, test.name, test.filePath, fn.id""".formatted(idList(relevantIds(state)));
+            case "search_historical_incidents" -> """
+                    MATCH (evidence:Evidence)-[r:REPORTS_ON|SUPPORTS_CAUSE|SUPPORTS_RESOLUTION|VALIDATES_FIX]->(incident:Incident)
+                    WHERE evidence.functionId IN %s
+                    RETURN incident.id, incident.title, evidence.id, type(r), evidence.verificationStatus, evidence.summary""".formatted(idList(relevantIds(state)));
+            case "inspect_service_dependencies" -> """
+                    MATCH (fn:Function)
+                    WHERE fn.id IN %s
+                    OPTIONAL MATCH (service:Service {id: fn.className})
+                    OPTIONAL MATCH (service)-[:DEPENDS_ON]-(other:Service)
+                    RETURN fn.id, service.id, service.name, other.id""".formatted(idList(relevantIds(state)));
+            case "inspect_evidence" -> """
+                    MATCH (evidence:Evidence)-[r:REPORTS_ON|SUPPORTS_CAUSE|SUPPORTS_RESOLUTION|VALIDATES_FIX]->(incident:Incident {id: %s})
+                    RETURN incident.id, evidence.id, type(r), evidence.evidenceType, evidence.verificationStatus, evidence.summary""".formatted(quote(arguments.get("incidentId")));
+            case "get_function_details" -> """
+                    MATCH (fn:Function {id: %s})
+                    OPTIONAL MATCH (caller:Function)-[:CALLS]->(fn)
+                    OPTIONAL MATCH (fn)-[:CALLS]->(callee:Function)
+                    RETURN fn.id, fn.signature, fn.filePath, fn.unresolvedCallCount, caller.id, callee.id""".formatted(quote(arguments.get("functionId")));
+            default -> null;
+        };
+    }
+
+    private static String traceQuery(AgentState state, Map<String, String> arguments) {
+        List<String> seeds = seeds(state, arguments.get("functionId"));
+        String direction = arguments.getOrDefault("direction", "both");
+        if (direction == null || direction.isBlank()) {
+            direction = "both";
+        }
+        int depth = depth(arguments.get("depth"));
+        String seedList = idList(seeds);
+        boolean callers = "callers".equals(direction) || "both".equals(direction) || direction.isBlank();
+        boolean callees = "downstream".equals(direction) || "both".equals(direction) || direction.isBlank();
+        String callerMatch = callers ? "OPTIONAL MATCH (caller:Function)-[:CALLS*1.." + depth + "]->(seed)\n" : "";
+        String calleeMatch = callees ? "OPTIONAL MATCH (seed)-[:CALLS*1.." + depth + "]->(callee:Function)\n" : "";
+        String returning = "RETURN seed.id" + (callers ? ", caller.id" : "") + (callees ? ", callee.id" : "");
+        return """
+                MATCH (seed:Function)
+                WHERE seed.id IN %s
+                %s%s%s""".formatted(seedList, callerMatch, calleeMatch, returning);
+    }
+
+    private static Set<String> relevantIds(AgentState state) {
+        Set<String> ids = new LinkedHashSet<>(changedFunctionIds(state));
+        ids.addAll(tracedIds(state));
+        return ids;
+    }
+
+    private static String idList(Iterable<String> ids) {
+        StringBuilder list = new StringBuilder("[");
+        int count = 0;
+        for (String id : ids) {
+            if (id == null || id.isBlank()) {
+                continue;
+            }
+            if (count == 20) {
+                list.append(", '…'");
+                break;
+            }
+            if (count > 0) {
+                list.append(", ");
+            }
+            list.append(quote(id));
+            count++;
+        }
+        list.append(']');
+        return list.toString();
+    }
+
+    private static String quote(String value) {
+        String text = value == null ? "" : value.replace("\\", "\\\\").replace("'", "\\'");
+        return "'" + text + "'";
     }
 
     private static AgentTool tool(String name, String description, Set<String> argumentNames, ToolBody body) {

@@ -8,4 +8,4 @@ npm run dev
 npm test
 ```
 
-The dev server proxies `/api` to `http://localhost:1212`.
+The dev server proxies `/api` to `http://localhost:1213`.

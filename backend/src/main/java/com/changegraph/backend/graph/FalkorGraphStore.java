@@ -59,6 +59,44 @@ public class FalkorGraphStore implements GraphStore {
     }
 
     @Override
+    public void deleteEdge(UUID projectId, String graphName, EdgeType type, String sourceId, String targetId) {
+        if (!GraphNames.matchesProject(projectId, graphName)) {
+            throw new IllegalArgumentException("Unexpected graph name");
+        }
+        requireWellFormed(sourceId);
+        requireWellFormed(targetId);
+        String query = switch (type) {
+            case REPORTS_ON -> "MATCH (a:Evidence {id: $from})-[r:REPORTS_ON]->(b:Incident {id: $to}) DELETE r";
+            case SUPPORTS_CAUSE -> "MATCH (a:Evidence {id: $from})-[r:SUPPORTS_CAUSE]->(b:Incident {id: $to}) DELETE r";
+            case SUPPORTS_RESOLUTION -> "MATCH (a:Evidence {id: $from})-[r:SUPPORTS_RESOLUTION]->(b:Incident {id: $to}) DELETE r";
+            case VALIDATES_FIX -> "MATCH (a:Evidence {id: $from})-[r:VALIDATES_FIX]->(b:Incident {id: $to}) DELETE r";
+            default -> throw new IllegalArgumentException("Unsupported edge delete: " + type);
+        };
+        try {
+            graph(graphName).query(query, Map.of("from", sourceId, "to", targetId));
+        } catch (RuntimeException ex) {
+            log.warn("FalkorDB edge delete failed for project {} ({})", projectId, ex.getClass().getSimpleName());
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "GRAPH_DELETE_FAILED", "The graph edge could not be deleted.");
+        }
+    }
+
+    @Override
+    public void deleteNode(UUID projectId, String graphName, NodeType type, String id) {
+        if (!GraphNames.matchesProject(projectId, graphName)) {
+            throw new IllegalArgumentException("Unexpected graph name");
+        }
+        requireWellFormed(id);
+        try {
+            graph(graphName).query(
+                    "MATCH (n:" + type.label() + " {id: $id}) DETACH DELETE n",
+                    Map.of("id", id));
+        } catch (RuntimeException ex) {
+            log.warn("FalkorDB node delete failed for project {} ({})", projectId, ex.getClass().getSimpleName());
+            throw new ApiException(HttpStatus.BAD_GATEWAY, "GRAPH_DELETE_FAILED", "The graph node could not be deleted.");
+        }
+    }
+
+    @Override
     public void merge(UUID projectId, String graphName, CodeGraph codeGraph) {
         if (!GraphNames.matchesProject(projectId, graphName)) {
             throw new IllegalArgumentException("Unexpected graph name");
@@ -94,6 +132,25 @@ public class FalkorGraphStore implements GraphStore {
             loadEdges(graph, codeGraph, type, bounded);
         }
         return codeGraph;
+    }
+
+    @Override
+    public String loadScript(String graphName, int limit) {
+        int bounded = Math.max(1, Math.min(limit, 500));
+        StringBuilder script = new StringBuilder();
+        script.append("GRAPH ").append(graphName).append('\n');
+        script.append(nodeRead(NodeType.REPOSITORY, bounded, "n.owner AS owner, n.name AS name, n.url AS url")).append('\n');
+        script.append(nodeRead(NodeType.FILE, bounded, "n.path AS path, n.packageName AS packageName, n.parseError AS parseError, n.importSummary AS importSummary")).append('\n');
+        script.append(nodeRead(NodeType.FUNCTION, bounded, "n.name AS name, n.signature AS signature, n.qualifiedSignature AS qualifiedSignature, n.filePath AS filePath, n.className AS className, n.isTest AS isTest, n.startLine AS startLine, n.endLine AS endLine, n.unresolvedCallCount AS unresolvedCallCount")).append('\n');
+        script.append(nodeRead(NodeType.SERVICE, bounded, "n.name AS name, n.basis AS basis")).append('\n');
+        script.append(nodeRead(NodeType.TEST, bounded, "n.name AS name, n.filePath AS filePath, n.signature AS signature")).append('\n');
+        script.append(nodeRead(NodeType.COMMIT, bounded, "n.sha AS sha, n.message AS message, n.committedAt AS committedAt, n.limitations AS limitations")).append('\n');
+        script.append(nodeRead(NodeType.INCIDENT, bounded, "n.title AS title, n.summary AS summary, n.sourceType AS sourceType, n.isSynthetic AS isSynthetic, n.scenarioKey AS scenarioKey")).append('\n');
+        script.append(nodeRead(NodeType.EVIDENCE, bounded, "n.evidenceType AS evidenceType, n.verificationStatus AS verificationStatus, n.confidence AS confidence, n.summary AS summary, n.sourceType AS sourceType, n.isSynthetic AS isSynthetic, n.functionId AS functionId")).append('\n');
+        for (EdgeType type : EdgeType.values()) {
+            script.append(edgeRead(type, bounded)).append('\n');
+        }
+        return script.toString().strip();
     }
 
     private void mergeNode(Graph graph, GraphNode node) {
@@ -144,7 +201,7 @@ public class FalkorGraphStore implements GraphStore {
     }
 
     private void loadNodes(Graph graph, CodeGraph codeGraph, NodeType type, int limit, String returns) {
-        String query = "MATCH (n:" + type.label() + ") RETURN n.id AS id, " + returns + " LIMIT " + limit;
+        String query = nodeRead(type, limit, returns);
         ResultSet result = graph.readOnlyQuery(query);
         if (result == null) {
             return;
@@ -168,7 +225,7 @@ public class FalkorGraphStore implements GraphStore {
     }
 
     private void loadEdges(Graph graph, CodeGraph codeGraph, EdgeType type, int limit) {
-        String query = "MATCH (a)-[r:" + type.name() + "]->(b) RETURN a.id AS source, b.id AS target, r.changeType AS changeType LIMIT " + limit;
+        String query = edgeRead(type, limit);
         ResultSet result = graph.readOnlyQuery(query);
         if (result == null) {
             return;
@@ -186,6 +243,14 @@ public class FalkorGraphStore implements GraphStore {
             }
             codeGraph.mergeEdge(type, source, target, properties);
         }
+    }
+
+    private static String nodeRead(NodeType type, int limit, String returns) {
+        return "MATCH (n:" + type.label() + ") RETURN n.id AS id, " + returns + " LIMIT " + limit;
+    }
+
+    private static String edgeRead(EdgeType type, int limit) {
+        return "MATCH (a)-[r:" + type.name() + "]->(b) RETURN a.id AS source, b.id AS target, r.changeType AS changeType LIMIT " + limit;
     }
 
     private Graph graph(String graphName) {

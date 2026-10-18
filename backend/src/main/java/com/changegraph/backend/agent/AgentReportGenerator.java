@@ -227,9 +227,16 @@ public final class AgentReportGenerator {
                 + recommendations.size() + " related tests, and " + related.size() + " related incidents. Risk "
                 + score.level() + " (" + score.score() + "/100).";
 
-        List<AgentReport.InvestigationStep> steps = state.observations().stream()
-                .map(item -> new AgentReport.InvestigationStep(item.tool(), item.summary()))
-                .toList();
+        List<AgentReport.InvestigationStep> steps = new ArrayList<>();
+        if (state.loadQuery() != null && !state.loadQuery().isBlank()) {
+            steps.add(new AgentReport.InvestigationStep(
+                    "falkordb",
+                    "Loaded this project's graph from FalkorDB before the investigation tools ran.",
+                    state.loadQuery()));
+        }
+        for (ToolObservation item : state.observations()) {
+            steps.add(new AgentReport.InvestigationStep(item.tool(), item.summary(), stepQuery(item)));
+        }
 
         return new AgentReport(
                 state.commitSha(),
@@ -249,6 +256,16 @@ public final class AgentReportGenerator {
                 uncertainties,
                 steps,
                 agentStatus);
+    }
+
+    private static String stepQuery(ToolObservation item) {
+        if (item.query() != null && !item.query().isBlank()) {
+            return item.query();
+        }
+        if ("policy".equals(item.tool()) || "planner".equals(item.tool())) {
+            return "This step does not read FalkorDB.";
+        }
+        return null;
     }
 
     private static AgentReport.RiskFactor factor(String statement, String kind, Iterable<String> ids, Set<String> known) {
